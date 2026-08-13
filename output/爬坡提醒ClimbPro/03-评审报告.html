@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRD 评审报告 — 爬坡提醒（ClimbPro）专项</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .card-body { max-height: 0; overflow: hidden; transition: max-height .25s ease; }
+  .card.open .card-body { max-height: 600px; }
+  .card.done { opacity: .55; }
+  .card.done .card-title { text-decoration: line-through; }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<header class="bg-slate-900 text-white px-6 py-5">
+  <div class="max-w-5xl mx-auto">
+    <h1 class="text-xl font-bold">🔍 PRD 多视角评审报告</h1>
+    <p class="text-slate-300 text-sm mt-1">爬坡提醒（ClimbPro）专项 PRD · draft V0.3 ｜ 评审日期：2026-08-13 ｜ firmware-review（dev + qa）</p>
+    <p class="text-slate-400 text-xs mt-1">事实源：迈金码表全功能整合PRD_V2 §3.7.6（benchmark）· 本报告为 AI 产出，非事实源</p>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 py-6">
+
+  <!-- 统计卡片 -->
+  <section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-red-500">
+      <div class="text-3xl font-bold text-red-600" id="stat-critical">7</div>
+      <div class="text-sm text-slate-500">🔴 严重（未处理 <span id="stat-critical-open">7</span>）</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-yellow-400">
+      <div class="text-3xl font-bold text-yellow-500">14</div>
+      <div class="text-sm text-slate-500">🟡 建议/边界遗漏</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-orange-400">
+      <div class="text-3xl font-bold text-orange-500">3</div>
+      <div class="text-sm text-slate-500">🟠 不可测试</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-purple-500">
+      <div class="text-3xl font-bold text-purple-600">5</div>
+      <div class="text-sm text-slate-500">🔀 交叉命中</div>
+    </div>
+  </section>
+
+  <!-- 总体结论 -->
+  <section class="bg-white rounded-xl shadow p-4 mb-6 text-sm leading-6">
+    <b>📊 总体结论：</b>
+    研发视角 🟡 有风险（4 处与 benchmark 实质冲突，定口径前无法开工）；
+    QA 视角 🟡 一般（指标量化充分，状态机与异常路径缺口大）。
+    <b>优先处理 5 个交叉命中项</b>；另需 PM 先修复 BENCHMARK.md 路径失配（专项 PRD 已移至 码表功能/ 子目录，索引未同步）。
+  </section>
+
+  <!-- 标签切换 -->
+  <nav class="flex gap-2 mb-4">
+    <button data-tab="dev" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-slate-900 text-white">🔧 研发视角</button>
+    <button data-tab="qa" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow">🧪 测试视角</button>
+    <button data-tab="cross" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow">🔀 交叉命中</button>
+  </nav>
+
+  <div id="panels"></div>
+
+  <footer class="text-xs text-slate-400 mt-8 pb-6 leading-5">
+    评审依据：BENCHMARK.md 召回 → 迈金码表全功能整合PRD_V2.md §3.7.6（benchmark）<br>
+    勾选状态保存在浏览器本地（localStorage）。本报告由 MFP 工作流 firmware-review skill 生成，属 AI 产出，结论需研发/QA 复核。
+  </footer>
+</main>
+
+<script>
+const DATA = {
+  dev: { title: "🔧 研发视角评审意见", groups: [
+    { sev: "🔴 严重问题（必须修改）", color: "red", items: [
+      { id: "D1", title: "完成总结内容与关闭时长冲突（draft 3.10 vs benchmark 完成总结）", detail: "benchmark：爬坡名称+用时+平均坡度+总爬升+与历史最佳（PR）对比，倒计时 10s 关闭。draft：用时+平均速度/功率/心率/VAM，5s 自动关闭，无 PR 对比。影响：按哪份开发都与另一份冲突；PR 对比涉及历史数据存储。建议：PM 定稿唯一口径；采纳新口径须回写 benchmark。" },
+      { id: "D2", title: "进行中表盘展示内容冲突（draft 3.3.2 vs benchmark 进行中表盘）", detail: "benchmark：名称/等级、剩余距离、当前坡度、平均坡度、已爬升、剩余爬升、进度条（颜色随坡度区间变化）。draft：用时、剩余距离/爬升、海拔高程图、4 项自定义数据。缺已爬升/进度条，多高程图/自定义项。建议：二选一定稿；draft 若为升级方案须声明替代并更新事实源。" },
+      { id: "D3", title: "检测阈值体系冲突（draft 3.1.1/3.1.3 vs benchmark 识别阈值）", detail: "benchmark 分类爬坡仅『坡长≥500m 且均坡≥3%』，短陡坡『300~500m 且均坡≥5%，或 <300m 但最大坡度≥8%』。draft 新增『最小连续爬升≥30m』并改写短陡坡定义。影响：两版算法识别结果集不同，验收基准与 App 预计算逻辑都受影响。建议：定稿单一阈值体系。" },
+      { id: "D4", title: "Free Ride 方案分裂：附近坡段依赖未定数据源（draft 3.5/3.6 vs benchmark Free Ride）", detail: "draft 的附近坡段需预知 6km 内全部坡段数据，但数据来源（3.1.4）待确认；benchmark 的 Free Ride 是实时高程检测当前坡，不依赖任何坡段数据。两者是不同技术方案。影响：数据源决策直接决定 3.5/3.6 是否可实现。建议：先决策 9.2-1，再定方案并显式标注功能范围差异。" }
+    ]},
+    { sev: "🟡 建议优化", color: "yellow", items: [
+      { id: "D5", title: "fit 存储 benchmark 已定义，draft 仍标待确认（9.2-2）", detail: "benchmark 已定义 climb 字段（起终点经纬度、爬升、平均坡度、用时；Free Ride 标 climb_source=free_ride）。建议：引用为基线，扩展字段单独标注。" },
+      { id: "D6", title: "导航到爬坡缺 benchmark 优先级规则（3.9）", detail: "缺：①到达起点 ≤50m 自动进入爬坡表盘；②路线内爬坡优先于单独导航到爬坡；③位置点导航与爬坡导航互斥。draft 3.9.2 二次偏航重规划为新增逻辑未标注。" },
+      { id: "D7", title: "语音文案不一致（3.14.2 vs benchmark）", detail: "benchmark Free Ride 语音「即将开始爬坡」，draft 接近文案「即将进入爬坡」。统一文案并同步多语言词条。" },
+      { id: "D8", title: "坡段数据下发通道/协议未说明（3.1.2）", detail: "仅描述数据内容，未声明通道（BLE 私有服务/路线文件内嵌）或『沿用现有路线下发方案』。" },
+      { id: "D9", title: "高程图坡度颜色分档未引用 benchmark（3.8.2/3.8.3）", detail: "benchmark 已定义绿<3%/黄3-6%/橙6-10%/红>10%，draft 仅写『复用样式』。建议显式引用。" },
+      { id: "D10", title: "固件典型陷阱分支未定义（疑似，待研发确认）", detail: "①下发坡段数据时 App 断连的影响与缓存策略；②爬坡中断电/重启后的状态与计时恢复；③低电量关机时进行中爬坡的收尾记录。" }
+    ]},
+    { sev: "🟢 确认点", color: "green", items: [
+      { id: "D11", title: "三层架构、表盘顺序、语音版本节奏均与 benchmark 一致", detail: "气压计+GNSS 融合与 5min/<10m 校准策略一致；表盘顺序一致；PV3.2 无语音/PV3.3 实现一致；Garmin 对标值标注『非实时检索』符合不确定性规范。" }
+    ]}
+  ]},
+  qa: { title: "🧪 测试视角评审意见", groups: [
+    { sev: "🔴 严重漏洞（必须修复）", color: "red", items: [
+      { id: "Q1", title: "无显式爬坡状态机，转换散落各章", detail: "接近(≤100m)→到达起点→进行中→完成/中止散落在 2.1/2.2/3.2/3.3/3.9/3.10。缺失：接近弹窗出现时已偏航、切换同起点坡段时当前坡段状态、重启后状态恢复。复现：骑向起点途中偏航>100m 再折返。建议：补状态-事件-操作矩阵。" },
+      { id: "Q2", title: "多坡段并行记录 vs 单一表盘状态未定义（3.5.4/3.13.1）", detail: "固件同时记录所有坡段开始事件、App 仅展示最后结束的；但 UI 同时只展示一个进行中坡段。切换时原坡段记为什么状态、fit 多条记录与 App 展示取舍规则缺失。复现：同起点两坡段重叠区骑行后切换。" },
+      { id: "Q3", title: "偏航中止后重新进入坡段无定义（2.2 vs 9.2-5）", detail: "abandoned 后折返重入同一坡段：重新计时？沿用原记录？再触发接近弹窗？真实高频场景。建议：定义重入判定、计时基准、fit 记录条数。" }
+    ]},
+    { sev: "🟡 边界遗漏", color: "yellow", items: [
+      { id: "Q4", title: "暂停计时：正文与待确认项自相矛盾（3.3.2 vs 9.2-4）", detail: "正文写『暂停不暂停计时』，9.2-4 又列为两文档冲突待确认。QA 无法设计用例。定稿单一口径后删除矛盾项。" },
+      { id: "Q5", title: "GNSS 丢失时偏航误判（疑似，待QA确认）", detail: "隧道/林荫丢星致位置跳变>100m 会误触发 abandoned；恢复定位后位置回跳。建议：定义 GNSS 丢失期间偏航判定冻结策略。" },
+      { id: "Q6", title: "断电/重启恢复未定义", detail: "爬坡中断电重启后：表盘恢复、计时累计、已记录数据如何处理。补策略或声明沿用通用骑行恢复方案。" },
+      { id: "Q7", title: "低电量省电模式行为未声明（疑似，可沿用系统方案）", detail: "语音/弹窗/爬坡检测在省电模式下是否降级。" },
+      { id: "Q8", title: "50 条上限截断规则未定义（3.4.2/3.5.2/3.6.2）", detail: "路线含 51 个坡段时截哪些（最近优先/前 50）？是否提示用户？" },
+      { id: "Q9", title: "边界值归属不统一", detail: "6km 范围、接近阈值 100m、起点自动进入 50m（benchmark）的临界值含/不含未标注。" },
+      { id: "Q10", title: "路线无爬坡段时预览表盘空态未定义（3.4.1）", detail: "不显示？空态提示？需补充。" },
+      { id: "Q11", title: "climb_id 生成与码表-App 一致性规则未定义（疑似）", detail: "同一坡段 id 两端如何一致；关联失败时 App 分析如何归属。" }
+    ]},
+    { sev: "🟠 不可测试的描述", color: "orange", items: [
+      { id: "Q12", title: "『平滑滚动』无量化（3.12.1 游标定位）", detail: "建议：定义帧率/位移连续性验收方式，可并入 25FPS 指标。" },
+      { id: "Q13", title: "检测阈值无验收基准（3.1.1）", detail: "『研发基于实际数据验证微调』无验收标准。建议：定义标定验收集（N 条已知坡段标准路线 + 期望判定结果）。" },
+      { id: "Q14", title: "25FPS 未指定测试操作集（3.12.1）", detail: "建议：明确滑动 X 屏 + 缩放切换 N 次的操作序列下测量。" }
+    ]},
+    { sev: "🟢 已充分覆盖", color: "green", items: [
+      { id: "Q15", title: "指标量化、机型矩阵、未定位异常、埋点覆盖均达标", detail: "第五章指标全部可测；6.1 机型支持范围明确；3.6.3 定位异常有提示；埋点覆盖主链路。" }
+    ]}
+  ]},
+  cross: { title: "🔀 双视角交叉命中（优先处理）", groups: [
+    { sev: "按处置优先级排序", color: "purple", items: [
+      { id: "X1", title: "Free Ride 数据来源与方案分裂", detail: "dev D4 × qa Q2/Q3。数据源决策牵动附近坡段可行性、多坡段并行记录与中止重入逻辑。" },
+      { id: "X2", title: "偏航中止与重新进入", detail: "dev D6 × qa Q3/Q5。benchmark 有 abandoned 定义但重入空白；GNSS 丢失误判叠加。" },
+      { id: "X3", title: "完成总结口径", detail: "dev D1 × qa Q1。内容/时长冲突 + 完成状态出口定义。" },
+      { id: "X4", title: "fit 记录与 climb_id", detail: "dev D5 × qa Q11。benchmark 已定义基础字段，id 一致性与扩展字段待补。" },
+      { id: "X5", title: "暂停计时口径", detail: "qa Q4。正文与待确认项自相矛盾，需 PM 定稿。" }
+    ]}
+  ]}
+};
+
+const colorMap = {
+  red:    { badge: "bg-red-100 text-red-700",    border: "border-red-200" },
+  yellow: { badge: "bg-yellow-100 text-yellow-700", border: "border-yellow-200" },
+  orange: { badge: "bg-orange-100 text-orange-700", border: "border-orange-200" },
+  green:  { badge: "bg-green-100 text-green-700",   border: "border-green-200" },
+  purple: { badge: "bg-purple-100 text-purple-700", border: "border-purple-300" }
+};
+
+const store = JSON.parse(localStorage.getItem("mfp-review-climbpro") || "{}");
+function saveStore() { localStorage.setItem("mfp-review-climbpro", JSON.stringify(store)); }
+
+function render(tab) {
+  const d = DATA[tab];
+  let html = `<h2 class="text-lg font-bold mb-3">${d.title}</h2>`;
+  for (const g of d.groups) {
+    const c = colorMap[g.color];
+    html += `<h3 class="text-sm font-semibold text-slate-600 mt-4 mb-2">${g.sev}（${g.items.length}）</h3>`;
+    for (const it of g.items) {
+      const done = store[it.id] ? " done" : "";
+      const open = store[it.id + "_open"] ? " open" : "";
+      const checked = store[it.id] ? "checked" : "";
+      html += `
+      <div class="card bg-white rounded-lg shadow-sm border ${c.border} mb-2${done}${open}" data-id="${it.id}">
+        <div class="flex items-start gap-3 p-3 cursor-pointer select-none" onclick="toggleOpen('${it.id}')">
+          <input type="checkbox" ${checked} class="mt-1 h-4 w-4 accent-green-600" onclick="event.stopPropagation(); toggleDone('${it.id}')" title="标记已处理">
+          <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded ${c.badge} shrink-0">${it.id}</span>
+          <span class="card-title text-sm flex-1">${it.title}</span>
+          <span class="text-slate-400 text-xs">▾</span>
+        </div>
+        <div class="card-body"><div class="px-3 pb-3 pl-12 text-sm text-slate-600 leading-6 whitespace-pre-line">${it.detail}</div></div>
+      </div>`;
+    }
+  }
+  document.getElementById("panels").innerHTML = html;
+  updateStats();
+}
+
+function toggleOpen(id) {
+  const el = document.querySelector(`.card[data-id="${id}"]`);
+  el.classList.toggle("open");
+  store[id + "_open"] = el.classList.contains("open");
+  saveStore();
+}
+function toggleDone(id) {
+  store[id] = !store[id];
+  const el = document.querySelector(`.card[data-id="${id}"]`);
+  el.classList.toggle("done", store[id]);
+  saveStore();
+  updateStats();
+}
+function updateStats() {
+  const open = DATA.dev.groups[0].items.filter(i => !store[i.id]).length
+             + DATA.qa.groups[0].items.filter(i => !store[i.id]).length;
+  document.getElementById("stat-critical-open").textContent = open;
+}
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => {
+      b.className = "tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow";
+    });
+    btn.className = "tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-slate-900 text-white";
+    render(btn.dataset.tab);
+  });
+});
+
+render("dev");
+</script>
+</body>
+</html>
