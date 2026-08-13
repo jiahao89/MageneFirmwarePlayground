@@ -1,3 +1,12 @@
+# MFP（MageneFirmwarePlayground）
+
+> ⚠️ **状态说明（2026-08-13）**：本项目已转型为 **Claude Code 原生工作流**（见 `CLAUDE.md` 与
+> `design/2026-08-13-MFP-执行方案.md`）。下方 vinext Web 应用骨架已**冻结**于 tag
+> `web-baseline-20260813`，停止投入；`app/` `worker/` `db/` 等目录仅作留档。
+> 团队共享需求出现时再解冻，届时知识同步方案另议。
+
+---
+
 # vinext-starter
 
 A clean full-stack starter running on
