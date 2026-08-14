@@ -1,4 +1,4 @@
 interface:
   display_name: "Magene Design"
-  short_description: "为顽鹿 App、迈金 C706、GEOID 原型选择正确设计系统"
-  default_prompt: "Use $magene-design to route this task to the correct Onelap App, Magene C706, or GEOID design system."
+  short_description: "为顽鹿 App、迈金、LowDesign、GEOID 原型选择正确设计系统"
+  default_prompt: "Use $magene-design to route this task to the correct Onelap App, Magene, LowDesign, or GEOID design system."

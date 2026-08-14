@@ -23,7 +23,7 @@ def main() -> int:
         "--target",
         required=True,
         action="append",
-        choices=("onelap-app", "magene-c706", "geoid"),
+        choices=("onelap-app", "magene-c706", "low-design", "geoid"),
         help="Repeat for a cross-device flow.",
     )
     parser.add_argument("--task", required=True, choices=("screen", "flow", "system"))
@@ -50,6 +50,8 @@ def main() -> int:
         required.extend(profile["documents"])
         if target == "onelap-app":
             notes.append("顽鹿 App color preflight: page=#0A1011, card=#151E1E, primary=#C6FF00. Do not copy a conflicting reference color.")
+        if target == "low-design":
+            notes.append("LowDesign preflight: C706 frame=320x480, mode=Night Vector dark, primary=#C6FF00, route=#2D78FF. Do not replace the official C706 light system or add a bottom key-mapping bar.")
         if args.mode not in profile["mode"]:
             blocking.append(
                 f"{profile['label']} does not have an approved {args.mode} mode. Choose one of: {', '.join(profile['mode'])}."
@@ -64,11 +66,11 @@ def main() -> int:
     tool_file = manifest["tools"][args.tool]
     if tool_file:
         required.append(tool_file)
-    if "geoid" in targets and args.tool != "none":
-        notes.append("Tool files define mechanics only. GEOID visual tokens and components come only from the GEOID system.")
+    if {"geoid", "low-design"}.intersection(targets) and args.tool != "none":
+        notes.append("Tool files define mechanics only. Visual tokens and components come only from the selected target system.")
 
     required = unique(required)
-    paths = [SKILL_ROOT / "references" / item for item in required]
+    paths = [SKILL_ROOT / item for item in required]
     missing = [path for path in paths if not path.is_file()]
     print("Design context")
     print(f"  Target system(s): {', '.join(targets)}")
@@ -78,8 +80,8 @@ def main() -> int:
     print(f"  Mode: {args.mode}")
     print(f"  Tool: {args.tool}")
     print("\nRequired reading")
-    for path in paths:
-        print(f"  - {path}")
+    for path in required:
+        print(f"  - {SKILL_ROOT / path}")
 
     if blocking:
         print("\nBlocking questions")

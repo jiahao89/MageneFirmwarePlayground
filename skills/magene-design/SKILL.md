@@ -1,6 +1,6 @@
 ---
 name: magene-design
-description: Route any Onelap App, Magene C706, GEOID, or cross-device prototype, screen, component, visual review, or design-system task to the bundled design rules before design work begins.
+description: Route any Onelap App, Magene, LowDesign, GEOID, or cross-device prototype, screen, component, visual review, or design-system task to the bundled design rules before design work begins.
 ---
 
 # Magene Design Gate
@@ -12,7 +12,7 @@ Use this self-contained Skill before creating, modifying, or reviewing a prototy
 Resolve these fields from the request and the confirmed product requirements:
 
 ```text
-Target: onelap-app | magene-c706 | geoid
+Target: onelap-app | magene-c706 | low-design | geoid
 Task: screen | flow | system
 Device: mandatory for GEOID
 Size: mandatory for GEOID, in `<width>x<height>` pixels (for example `320x480`)
@@ -26,7 +26,7 @@ Run the bundled route check from any working directory:
 
 ```bash
 python3 <skill-dir>/scripts/design_route.py \
-  --target <onelap-app|magene-c706|geoid> [--target <...>] \
+  --target <onelap-app|magene-c706|low-design|geoid> [--target <...>] \
   --task <screen|flow|system> --tool <figma|stitch|pendev|none> \
   [--device <model>] [--size <width>x<height>] [--mode <dark|light|both|n-a>]
 ```
@@ -35,7 +35,7 @@ Read every file returned under `Required reading`. They are bundled under `<skil
 
 Before prototyping complex App, device, or accessory work, make sure the requirements define the relevant objects and fields, states, events, operations, page states, and transitions. If a gap changes scope, the main flow, interaction, device capability, or communication behavior, ask the product owner; otherwise record it as an open question. Do not convert an assumption into a confirmed rule.
 
-Before generating a design, run the target system's token preflight. For `onelap-app`, explicitly state `page=#0A1011`, `card=#151E1E`, and `primary=#C6FF00`. Existing Figma references are layout references only; never copy a conflicting primary color from them.
+Before generating a design, run the target system's token preflight. For `onelap-app`, explicitly state `page=#0A1011`, `card=#151E1E`, and `primary=#C6FF00`. For `low-design`, explicitly state `frame=320x480`, `mode=Night Vector dark`, `primary=#C6FF00`, and `route=#2D78FF`. Existing Figma references are layout references only; never copy a conflicting primary color from them.
 
 ## 2. Announce the context
 
@@ -56,6 +56,12 @@ For `onelap-app`, add this line to the context card:
 
 ```text
 顽鹿主色校验：#C6FF00 已确认并将用于主操作/选中态/品牌强调
+```
+
+For `low-design`, add this line to the context card:
+
+```text
+LowDesign 视觉校验：Night Vector 深色、320×480、Volt #C6FF00 仅作主操作/焦点；不使用底部按键映射
 ```
 
 ## 3. Design and review

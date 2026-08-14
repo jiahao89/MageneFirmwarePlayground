@@ -55,6 +55,20 @@ firmware-review 先跑扫「有没有/对不对」，人聚焦「好不好/该�
 | 设计/原型 | "出XX原型" | `magene-design` 路由 → `figma-lofi-prototype` / `drawio-skill` |
 | 交付归档 | "整理成飞书文档/PPT" | `lark-doc` / `pptx` / `docx` |
 
+## Skill 来源约定（同名冲突裁决）
+
+MFP 只维护 **1 个本地 skill**（`firmware-review`），其余全部引用成熟件：
+
+| Skill | 来源 | 说明 |
+|-------|------|------|
+| `prd-writer` | 全局 `~/.claude/skills/prd-writer`（官方多文件版） | 概念版/落地版两版交付；**不用** prd-generator 项目版 |
+| `hardware-product-analysis` / `research` / `grill-me` / `domain-modeling` / `wait-what` | 全局 `~/.claude/skills/`（官方 PM skill + mattpocock） | 竞品调研 / 需求澄清 / 对象建模 |
+| `docx` / `pptx` / `lark-doc` | 全局 `~/.claude/skills/` | 交付归档 |
+| `firmware-review` | MFP 本地 `.claude/skills/firmware-review/` | ★ 唯一本地 skill，固件双视角评审 |
+| `magene-design` / `figma-lofi-prototype` / `drawio-skill` | `skills/`（workspace 副本，源 `~/.agents/skills/`） | 设计路由 / 低保真 / 图 |
+
+> 全局 skill 数量庞大，同名/近义 skill 可能互相干扰。各 Phase 已在上方编排表写死 skill 名，AI 按编排执行，不得自行替换。
+
 ## 设计门禁
 
 涉及顽鹿 App / 迈金 C706 / GEOID 或跨端流程时，先走 [`skills/magene-design/`](skills/magene-design/) 设计路由（`$magene-design`），读取 `knowledge-base/05_设计系统/` 路由结果后再出图。**不得以旧 `design system/` 或 `GEOID_Design/` 为依据**。

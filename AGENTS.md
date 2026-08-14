@@ -32,3 +32,9 @@
 - 任务涉及顽鹿 App、迈金 C706、GEOID 或跨端流程时，先走 [`skills/magene-design/`](skills/magene-design/) 设计路由，读取 `knowledge-base/05_设计系统/` 结果后再出图。
 - 低保真流程用 [`skills/figma-lofi-prototype/`](skills/figma-lofi-prototype/)，系统/状态/关系图用 [`skills/drawio-skill/`](skills/drawio-skill/)。
 - 不自行补充未确认的实体按键、硬件能力、通信协议、自动恢复逻辑或页面状态。
+
+## Skill 来源（与 CLAUDE.md 一致）
+
+- 通用 PM / 交付 skill 用全局 `~/.claude/skills/`（`prd-writer`、`hardware-product-analysis`、`research`、`grill-me`、`domain-modeling`、`docx`/`pptx`/`lark-doc`），**不用** prd-generator 项目版。
+- 固件双视角评审用本地 `.claude/skills/firmware-review/`（唯一本地 skill）。
+- 设计/画图用 `skills/` 下的 `magene-design` / `figma-lofi-prototype` / `drawio-skill`（workspace 副本）。

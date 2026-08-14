@@ -1,44 +1,41 @@
 {
   "version": 1,
   "base": [
-    "README.md",
-    "00_使用与路由.md"
+    "references/README.md",
+    "references/00_使用与路由.md"
   ],
   "targets": {
     "onelap-app": {
       "label": "顽鹿 App",
-      "documents": [
-        "01_顽鹿App/设计规范.md"
-      ],
+      "documents": ["references/01_顽鹿App/设计规范.md"],
       "mode": ["dark", "n-a"]
     },
     "magene-c706": {
-      "label": "迈金 C706",
-      "documents": [
-        "02_迈金C706/设计规范.md"
-      ],
+      "label": "迈金",
+      "documents": ["references/02_迈金C706/设计规范.md"],
       "mode": ["light", "n-a"]
+    },
+    "low-design": {
+      "label": "LowDesign（C706 高保真探索）",
+      "documents": ["references/04_LowDesign/设计规范.md"],
+      "mode": ["dark", "n-a"]
     },
     "geoid": {
       "label": "GEOID 极遨",
-      "documents": [
-        "03_GEOID/设计规范.md"
-      ],
+      "documents": ["references/03_GEOID/设计规范.md"],
       "mode": ["dark", "light", "both"],
       "requires_device": true
     }
   },
   "tasks": {
     "screen": [],
-    "flow": [
-      "04_跨端流程规范.md"
-    ],
+    "flow": ["references/04_跨端流程规范.md"],
     "system": []
   },
   "tools": {
-    "figma": "05_工具适配/Figma.md",
-    "stitch": "05_工具适配/Stitch.md",
-    "pendev": "05_工具适配/Pen.dev.md",
+    "figma": "references/05_工具适配/Figma.md",
+    "stitch": "references/05_工具适配/Stitch.md",
+    "pendev": "references/05_工具适配/Pen.dev.md",
     "none": null
   }
 }
