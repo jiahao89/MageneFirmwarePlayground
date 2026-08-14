@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRD 评审报告 — 爬坡规划（ClimbPro）</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .card-body { max-height: 0; overflow: hidden; transition: max-height .25s ease; }
+  .card.open .card-body { max-height: 600px; }
+  .card.done { opacity: .55; }
+  .card.done .card-title { text-decoration: line-through; }
+</style>
+</head>
+<body class="bg-slate-100 min-h-screen">
+
+<header class="bg-slate-900 text-white px-6 py-5">
+  <div class="max-w-5xl mx-auto">
+    <h1 class="text-xl font-bold">🔍 PRD 多视角评审报告</h1>
+    <p class="text-slate-300 text-sm mt-1">爬坡规划（ClimbPro）PRD · v0.1 ｜ 评审日期：2026-08-14 ｜ firmware-review（dev + qa）</p>
+    <p class="text-slate-400 text-xs mt-1">事实源：整合PRD_V2 §3.7.6（benchmark）· 本报告为 AI 产出，非事实源</p>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 py-6">
+
+  <section class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-red-500">
+      <div class="text-3xl font-bold text-red-600">3</div>
+      <div class="text-sm text-slate-500">🔴 严重（未处理 <span id="stat-critical-open">3</span>）</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-yellow-400">
+      <div class="text-3xl font-bold text-yellow-500">8</div>
+      <div class="text-sm text-slate-500">🟡 建议/边界遗漏</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-orange-400">
+      <div class="text-3xl font-bold text-orange-500">0</div>
+      <div class="text-sm text-slate-500">🟠 不可测试</div>
+    </div>
+    <div class="bg-white rounded-xl shadow p-4 border-l-4 border-purple-500">
+      <div class="text-3xl font-bold text-purple-600">2</div>
+      <div class="text-sm text-slate-500">🔀 交叉命中</div>
+    </div>
+  </section>
+
+  <section class="bg-white rounded-xl shadow p-4 mb-6 text-sm leading-6">
+    <b>📊 总体结论：</b> 4 处历史冲突已定稿、状态矩阵已建立（较原 draft 重大进步）；但定稿牵出 2 个新闭环缺口——
+    <b>PR 对比依赖 PR 存储未闭环</b>（D1）与 <b>FIT 断电保护缺失</b>（D2/Q1）。先闭环这两处，其余 🟡 进待确认项。
+  </section>
+
+  <nav class="flex gap-2 mb-4">
+    <button data-tab="dev" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-slate-900 text-white">🔧 研发视角</button>
+    <button data-tab="qa" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow">🧪 测试视角</button>
+    <button data-tab="cross" class="tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow">🔀 交叉命中</button>
+  </nav>
+
+  <div id="panels"></div>
+
+  <footer class="text-xs text-slate-400 mt-8 pb-6 leading-5">
+    事实源：迈金码表全功能整合PRD_V2.md §3.7.6（benchmark）<br>
+    勾选状态保存在本地。本报告由 MFP firmware-review skill 生成，属 AI 产出，结论需研发/QA 复核。
+  </footer>
+</main>
+
+<script>
+const DATA = {
+  dev: { title: "🔧 研发视角评审意见", groups: [
+    { sev: "🔴 严重问题（必须修改）", color: "red", items: [
+      { id: "D1", title: "PR 对比依赖 PR 数据存储未闭环（§6.4 依赖 §7.2）", detail: "§6.4 完成总结含「与历史最佳(PR)对比」，但 §7.2 写「PR 历史存储位置待定」、§8 待确认#5 未定。存储未定则 PR 对比无法实现。建议：先决策 PR 存储方案（码表本地/App/云端），或本期 PR 对比降为 P1。" },
+      { id: "D2", title: "FIT 断电保护缺失（§7.2）", detail: "benchmark §3.7.6 要求「FIT 实时写入和断电保护」，PRD 只列 climb 字段，未提断电时数据保存与恢复。建议：补断电保护策略（实时写入 + 掉电恢复），沿用现有 FIT 记录方案。" }
+    ]},
+    { sev: "🟡 建议优化", color: "yellow", items: [
+      { id: "D3", title: "状态机 APPROACH→IDLE 转换缺失（§5.2）", detail: "接近后远离起点取消提醒的转换未定义；状态矩阵列了「远离」退出条件但转换表缺。建议：补「接近后远离>阈值取消提醒回 IDLE」。" },
+      { id: "D4", title: "爬坡中断电重启后状态与计时恢复未定义", detail: "补恢复策略或声明沿用通用骑行恢复方案。" },
+      { id: "D5", title: "低电量关机时进行中爬坡的收尾记录未定义", detail: "声明沿用低电量通用方案或列出差异。" },
+      { id: "D6", title: "App 断连时路线坡段下发中断的影响未定义（§7.1）", detail: "补断连缓存策略。" }
+    ]},
+    { sev: "🟢 确认点", color: "green", items: [
+      { id: "D7", title: "三层架构完整、检测阈值已定稿、FIT 字段定义完整", detail: "气压计+GNSS 融合与 benchmark 一致；阈值 ≥30m+≥500m+≥3% 无残留冲突；climb/free_ride/abandoned 字段齐全。" }
+    ]}
+  ]},
+  qa: { title: "🧪 测试视角评审意见", groups: [
+    { sev: "🔴 严重漏洞（必须修复）", color: "red", items: [
+      { id: "Q1", title: "断电保护缺失 → FIT 完整性不可测试（交叉 D2）", detail: "爬坡中拔电/低电关机后开机查看 FIT。建议：补断电保护后设计掉电恢复用例。" }
+    ]},
+    { sev: "🟡 边界遗漏", color: "yellow", items: [
+      { id: "Q2", title: "完成浮层无 PR 时（首次爬坡）显示未定义（§6.4）", detail: "补「无 PR 时仅展示本次数据」的显示规则。" },
+      { id: "Q3", title: "路线无爬坡段时预览表盘空态未定义（§6.2）", detail: "补空态提示或不展示规则。" },
+      { id: "Q4", title: "「至多 50 条」截断规则未定义（§6.2）", detail: "定义截断规则（最近优先/前 50）+ 是否提示用户。" },
+      { id: "Q5", title: "检测阈值验收基准仍缺（§6.1）", detail: "「研发基于实际数据定标」无标定验收集。建议：N 条已知坡段标准路线 + 期望判定结果。" }
+    ]},
+    { sev: "🟢 已充分覆盖", color: "green", items: [
+      { id: "Q6", title: "指标已量化、状态机显式、完成/中止出口明确", detail: "25FPS/加载时长/阈值均可测；状态矩阵集中定义；completed/abandoned 出口清晰。埋点章节待补（🟡）。" }
+    ]}
+  ]},
+  cross: { title: "🔀 双视角交叉命中（优先处理）", groups: [
+    { sev: "按处置优先级排序", color: "purple", items: [
+      { id: "X1", title: "FIT 断电保护", detail: "dev D2 × qa Q1。benchmark 明确要求，属必修。" },
+      { id: "X2", title: "状态机出口完整性", detail: "dev D3（APPROACH→IDLE 缺口）→ 影响状态覆盖与用例设计。" }
+    ]}
+  ]}
+};
+
+const colorMap = {
+  red:    { badge: "bg-red-100 text-red-700",    border: "border-red-200" },
+  yellow: { badge: "bg-yellow-100 text-yellow-700", border: "border-yellow-200" },
+  orange: { badge: "bg-orange-100 text-orange-700", border: "border-orange-200" },
+  green:  { badge: "bg-green-100 text-green-700",   border: "border-green-200" },
+  purple: { badge: "bg-purple-100 text-purple-700", border: "border-purple-300" }
+};
+
+const store = JSON.parse(localStorage.getItem("mfp-review-papeng") || "{}");
+function saveStore() { localStorage.setItem("mfp-review-papeng", JSON.stringify(store)); }
+
+function render(tab) {
+  const d = DATA[tab];
+  let html = `<h2 class="text-lg font-bold mb-3">${d.title}</h2>`;
+  for (const g of d.groups) {
+    const c = colorMap[g.color];
+    html += `<h3 class="text-sm font-semibold text-slate-600 mt-4 mb-2">${g.sev}（${g.items.length}）</h3>`;
+    for (const it of g.items) {
+      const done = store[it.id] ? " done" : "";
+      const open = store[it.id + "_open"] ? " open" : "";
+      const checked = store[it.id] ? "checked" : "";
+      html += `
+      <div class="card bg-white rounded-lg shadow-sm border ${c.border} mb-2${done}${open}" data-id="${it.id}">
+        <div class="flex items-start gap-3 p-3 cursor-pointer select-none" onclick="toggleOpen('${it.id}')">
+          <input type="checkbox" ${checked} class="mt-1 h-4 w-4 accent-green-600" onclick="event.stopPropagation(); toggleDone('${it.id}')" title="标记已处理">
+          <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded ${c.badge} shrink-0">${it.id}</span>
+          <span class="card-title text-sm flex-1">${it.title}</span>
+          <span class="text-slate-400 text-xs">▾</span>
+        </div>
+        <div class="card-body"><div class="px-3 pb-3 pl-12 text-sm text-slate-600 leading-6 whitespace-pre-line">${it.detail}</div></div>
+      </div>`;
+    }
+  }
+  document.getElementById("panels").innerHTML = html;
+  updateStats();
+}
+
+function toggleOpen(id) {
+  const el = document.querySelector(`.card[data-id="${id}"]`);
+  el.classList.toggle("open");
+  store[id + "_open"] = el.classList.contains("open");
+  saveStore();
+}
+function toggleDone(id) {
+  store[id] = !store[id];
+  document.querySelector(`.card[data-id="${id}"]`).classList.toggle("done", store[id]);
+  saveStore();
+  updateStats();
+}
+function updateStats() {
+  const open = DATA.dev.groups[0].items.filter(i => !store[i.id]).length
+             + DATA.qa.groups[0].items.filter(i => !store[i.id]).length;
+  document.getElementById("stat-critical-open").textContent = open;
+}
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => {
+      b.className = "tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-white text-slate-600 shadow";
+    });
+    btn.className = "tab-btn px-4 py-2 rounded-lg text-sm font-medium bg-slate-900 text-white";
+    render(btn.dataset.tab);
+  });
+});
+
+render("dev");
+</script>
+</body>
+</html>
