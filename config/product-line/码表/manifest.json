@@ -1,0 +1,19 @@
+{
+  "productLine": "码表",
+  "name": "迈金码表（Cycling Computer）",
+  "description": "迈金室外固件产品线主线：C716/C716 Pro、C706、C606、C506、CC750、EDR 等码表机型。",
+  "apps": {
+    "国内": "顽鹿运动",
+    "海外": "OnelapFit"
+  },
+  "primaryModels": ["C716 Pro", "C716", "C706", "C606 Pro", "C606 V2", "C506", "CC750 Pro", "EDR"],
+  "knowledge": {
+    "personas": "knowledge-base/03_人群与方法论/6层人群模型.md",
+    "competitors": "knowledge-base/02_竞品/竞品对标框架.md",
+    "versionMatrix": "knowledge-base/01_事实源/机型版本功能矩阵.md",
+    "benchmark": "knowledge-base/01_事实源/BENCHMARK.md",
+    "templates": "knowledge-base/00_规范与模板/",
+    "style": "config/product-line/码表/style.md",
+    "designSystem": "knowledge-base/05_设计系统/"
+  }
+}

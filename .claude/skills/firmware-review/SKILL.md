@@ -19,7 +19,7 @@ description: >
 ## 评审前置（两种模式都要做）
 
 1. 若调用方提供了事实源清单（benchmark / 知识页路径），先读取；未提供则读
-   `~/Projects/Magene_PM_Workspace/05_AI协作评测/BENCHMARK.md` 定位相关 benchmark 文件
+   `knowledge-base/01_事实源/BENCHMARK.md` 定位相关 benchmark 文件，再到 `~/Projects/Magene_PM_Workspace/` 读取原文
 2. 对照 benchmark 检查 PRD 中的功能定义是否与既定事实源冲突
 3. 遵守 `.ai_global_profile.md`：**只指出缺口，不替 PRD 补充**未确认的实体按键、
    协议字段、硬件能力、自动恢复逻辑

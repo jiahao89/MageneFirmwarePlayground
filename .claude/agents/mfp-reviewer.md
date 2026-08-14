@@ -19,7 +19,7 @@ model: sonnet
 
 - 确认 PRD 文件路径（通常 `output/{需求名}/02-PRD.md`）
 - 若调用方提供了事实源清单（benchmark / 知识页路径），一并读入；未提供则自行读
-  `~/Projects/Magene_PM_Workspace/05_AI协作评测/BENCHMARK.md` 定位相关 benchmark
+  `knowledge-base/01_事实源/BENCHMARK.md` 定位相关 benchmark，再到 `~/Projects/Magene_PM_Workspace/` 读取 benchmark 原文
 
 ### Step 2: 并行双视角评审
 
