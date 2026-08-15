@@ -62,7 +62,8 @@ MFP 只维护 **1 个本地 skill**（`firmware-review`），其余全部引用�
 | Skill | 来源 | 说明 |
 |-------|------|------|
 | `prd-writer` | 全局 `~/.claude/skills/prd-writer`（官方多文件版） | 概念版/落地版两版交付；**不用** prd-generator 项目版 |
-| `hardware-product-analysis` / `research` / `grill-me` / `domain-modeling` / `wait-what` | 全局 `~/.claude/skills/`（官方 PM skill + mattpocock） | 竞品调研 / 需求澄清 / 对象建模 |
+| `hardware-product-analysis` | 全局 `~/.claude/skills/`（官方 PM skill） | 竞品调研 |
+| `research` / `grill-me` / `domain-modeling` / `wait-what` | `mattpocock-skills` 插件（Claude Code 官方 marketplace，自动更新） | 需求澄清 / 调研 / 对象建模 |
 | `docx` / `pptx` / `lark-doc` | 全局 `~/.claude/skills/` | 交付归档 |
 | `firmware-review` | MFP 本地 `.claude/skills/firmware-review/` | ★ 唯一本地 skill，固件双视角评审 |
 | `magene-design` / `figma-lofi-prototype` / `drawio-skill` | `skills/`（workspace 副本，源 `~/.agents/skills/`） | 设计路由 / 低保真 / 图 |

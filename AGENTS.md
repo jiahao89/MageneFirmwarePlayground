@@ -35,6 +35,6 @@
 
 ## Skill 来源（与 CLAUDE.md 一致）
 
-- 通用 PM / 交付 skill 用全局 `~/.claude/skills/`（`prd-writer`、`hardware-product-analysis`、`research`、`grill-me`、`domain-modeling`、`docx`/`pptx`/`lark-doc`），**不用** prd-generator 项目版。
+- 通用 PM / 交付 skill 用全局 `~/.claude/skills/`（`prd-writer`、`hardware-product-analysis`、`docx`/`pptx`/`lark-doc`），mattpocock 系（`research`、`grill-me`、`domain-modeling`、`wait-what`）用 `mattpocock-skills` 插件（官方 marketplace，自动更新），**不用** prd-generator 项目版。
 - 固件双视角评审用本地 `.claude/skills/firmware-review/`（唯一本地 skill）。
 - 设计/画图用 `skills/` 下的 `magene-design` / `figma-lofi-prototype` / `drawio-skill`（workspace 副本）。

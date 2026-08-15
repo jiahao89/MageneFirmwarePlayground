@@ -36,8 +36,8 @@ model: sonnet
 
 **触发条件**：需求描述缺少明确目标 / 场景 / 机型 / 范围任一关键要素，或 PM 表达存在歧义时。
 
-1. 调用全局 `grill-me` skill（`~/.claude/skills/grill-me`）访谈澄清，逐项确认：Goal（用户想达成什么）、Scenario（Who/When/Where）、Pain（痛点，附证据）、Solution（方案 + MVP 边界）
-2. 若仅个别表述含糊，用 `wait-what`（`~/.claude/skills/wait-what`）复述确认即可，不必完整访谈
+1. 调用全局 `grill-me` skill（`mattpocock-skills` 插件）访谈澄清，逐项确认：Goal（用户想达成什么）、Scenario（Who/When/Where）、Pain（痛点，附证据）、Solution（方案 + MVP 边界）
+2. 若仅个别表述含糊，用 `wait-what`（`mattpocock-skills` 插件）复述确认即可，不必完整访谈
 3. 澄清不充分、会改变范围/流程/交互的缺口未闭合前，**不进入 Phase 1**
 4. 澄清结论附于 `01-需求分析.md` 开头作为"需求基线"
 
@@ -50,7 +50,7 @@ model: sonnet
 ### Phase 2: 竞品调研 → `00-竞品调研.md`
 
 - 调用全局 `hardware-product-analysis` skill（`~/.claude/skills/hardware-product-analysis`，硬件/功能方案拆解对标）
-- 功能方案类信息不足时，补充全局 `research` skill（`~/.claude/skills/research`）联网搜索，存引用笔记
+- 功能方案类信息不足时，补充全局 `research` skill（`mattpocock-skills` 插件）联网搜索，存引用笔记
 - 按 `knowledge-base/02_竞品/竞品对标框架.md` 的模板结构输出（四品牌 + 三层拆解 + 差异化机会点）
 - 数据来源必须标注（官网/权威媒体/实测）；搜不到的明说搜不到
 
@@ -61,7 +61,7 @@ model: sonnet
 - **复杂度路由**：判定为复杂需求（跨端/OTA/多传感器并发/复杂状态机）时，追加产出：
   - 对象与字段清单（模板 `knowledge-base/00_规范与模板/对象与字段清单模板.md`）
   - 状态—事件—操作矩阵（模板 `knowledge-base/00_规范与模板/状态-事件-操作矩阵模板.md`）
-  - 建模时参考全局 `domain-modeling` skill（`~/.claude/skills/domain-modeling`）的词汇与边界思想
+  - 建模时参考全局 `domain-modeling` skill（`mattpocock-skills` 插件）的词汇与边界思想
 - 产物随 `01-需求分析.md` 一并交付；暂停等 PM 确认
 
 ### Phase 4: PRD 撰写 → `02-PRD.md`
