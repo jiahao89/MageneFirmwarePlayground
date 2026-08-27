@@ -1,0 +1,4 @@
+interface:
+  display_name: "Draw.io Diagrams"
+  short_description: "生成流程图、架构图、UML/时序/类图、拓扑图等 .drawio 图，并本地导出 PNG/SVG/PDF"
+  default_prompt: "Use $drawio-skill to create this diagram as a .drawio file and export it locally."

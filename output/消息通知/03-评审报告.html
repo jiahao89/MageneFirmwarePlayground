@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>消息通知 PRD · 双视角评审报告</title>
+<title>消息通知 PRD · 双视角评审报告（V2.8 终态）</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   .card{transition:all .15s ease}
@@ -19,15 +19,22 @@
   <!-- 头部 -->
   <div class="mb-6">
     <h1 class="text-2xl font-bold">消息通知 PRD · 双视角评审报告</h1>
-    <p class="text-sm text-gray-500 mt-1">评审对象 <code class="bg-gray-100 px-1 rounded">output/消息通知/02-PRD.md</code>（V2.0） · 事实源 benchmark §3.5.1 · 2026-08-14</p>
+    <p class="text-sm text-gray-500 mt-1">评审对象 <code class="bg-gray-100 px-1 rounded">output/消息通知/02-PRD.md</code> · 事实源 benchmark §3.5.1</p>
+    <p class="text-sm text-gray-500 mt-1">原始评审 <code>V2.0</code>（2026-08-14）· 本报告已标注 <code>V2.2–V2.8</code> 解决状态 · 终态 <code>V2.8</code>（2026-08-17）</p>
+  </div>
+
+  <!-- 终态概览横幅 -->
+  <div class="mb-6 bg-blue-50 border border-blue-200 rounded-xl p-4">
+    <p class="text-sm font-semibold text-blue-800">📊 终态概览（V2.8）</p>
+    <p class="text-sm text-blue-700 mt-1">原始评审 V2.0 共提出 <strong>40 项</strong>（🔴 7 · 🟡 26 · 🟠 7）。经 V2.2–V2.8 修订：<strong class="text-green-700">34 项已解决</strong>、<strong class="text-amber-700">5 项部分解决（已入待确认清单）</strong>、<strong class="text-red-700">1 项未解决（D3 BLE 协议，🔴 阻塞固件排期）</strong>。剩余未解决项不阻塞需求层，但阻塞固件实现冻结。</p>
   </div>
 
   <!-- 统计卡片 -->
-  <div class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6" id="statCards"></div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6" id="statCards"></div>
 
   <!-- 交叉命中 -->
   <div class="mb-8">
-    <h2 class="text-lg font-semibold mb-3">🔗 交叉命中（两视角共同关注，优先处理）</h2>
+    <h2 class="text-lg font-semibold mb-3">🔗 交叉命中（两视角共同关注，6 组已全部收敛）</h2>
     <div id="crossList" class="space-y-3"></div>
   </div>
 
@@ -41,74 +48,78 @@
   <div id="view-dev"></div>
   <div id="view-qa" class="hidden"></div>
 
-  <p class="text-xs text-gray-400 mt-8">结论：🟡 有风险（两视角一致）· 合并交叉命中后约 5 个独立 🔴 项，详见 <code>03-评审意见.md</code></p>
+  <p class="text-xs text-gray-400 mt-8">原始结论（V2.0）：🟡 有风险 · 终态结论（V2.8）：🟡 有条件通过 —— 需求层已收敛，仅 D3（BLE 协议）+ 5 项部分项待研发/App/设计补充。详见 <code>03-评审意见.md</code> 与 <code>05-原型验收.md</code></p>
 </div>
 
 <script>
 const DEV = [
-  {id:"D1",lvl:"red",loc:"§7.5 vs §7.4 vs §1.3",p:"勿扰态下「来电是否弹窗」三处矛盾：矩阵写\"不弹窗\"、语义写\"保留部分弹窗\"、目标写\"不错过关键来电\"，与 benchmark「屏蔽部分弹窗」冲突。",s:"统一勿扰保留弹窗白名单，明确来电在勿扰/静音下行为，并入状态矩阵",cross:"X1"},
-  {id:"D2",lvl:"red",loc:"§三 vs §7.5",p:"1s 轮询功耗未评估，轮询 vs BLE notify 功耗量级差异大，未与长续航/低电量调和。",s:"明确 1s 轮询归属端，给 BLE 唤醒频率与功耗评估"},
-  {id:"D3",lvl:"red",loc:"§四 + §八",p:"BLE 协议未到可实现粒度：GATT/特征值/编码/分包/最大长度全未定义，字段必然超单包。",s:"补全协议层或降级为需求层文档并单列协议方案"},
-  {id:"Y1",lvl:"amber",loc:"§7.3/§7.5",p:"消息列表掉电/重启持久化未定义（RAM vs Flash）。",s:"明确存储介质与断电行为",cross:"X3"},
-  {id:"Y2",lvl:"amber",loc:"§6.2/§五",p:"断连回连：断连瞬间/重连中通知缓存策略未定义。",s:"定义断连窗口处理+回连补同步",cross:"X2"},
-  {id:"Y3",lvl:"amber",loc:"§九",p:"低电量降级未定义。",s:"补低电量行为矩阵"},
-  {id:"Y4",lvl:"amber",loc:"§三/§五",p:"多设备并发/BLE 通道竞争（通知突发 vs 音乐控制）未评估。",s:"评估同链路并发，定义优先级/背压"},
-  {id:"Y5",lvl:"amber",loc:"§7.3/§八",p:"timestamp 来源+跨时区显示未定义。",s:"定义时间戳来源与展示时区",cross:"X4"},
-  {id:"Y6",lvl:"amber",loc:"§7.1",p:"通知弹窗与既有弹窗体系（防盗/计圈/导航/智联）优先级互斥未定义。",s:"定义弹窗体系中的优先级"},
-  {id:"Y7",lvl:"amber",loc:"§7.5",p:"长续航行\"声音\"列填\"历史资料记录关闭\"，矩阵错位。",s:"修正列语义，补长续航声音行为"},
-  {id:"Y8",lvl:"amber",loc:"§7.4",p:"漏 benchmark 勿扰细节：声音按钮静音不可调、被屏蔽弹窗不补弹。",s:"补入勿扰行为描述",cross:"X5"},
-  {id:"Y9",lvl:"amber",loc:"§7.2",p:"来电 5s 自动关与\"关闭\"选项，benchmark 未提。",s:"标注扩展待确认"},
-  {id:"Y10",lvl:"amber",loc:"§5.1/§7.1",p:"同 1s 窗口多条消息全入列还是仅最新未交代。",s:"明确同窗口多消息写入策略",cross:"X6"},
-  {id:"Y11",lvl:"amber",loc:"§九",p:"C716/PV3.2 通知能力为无来源断言。",s:"标待确认或补来源"},
-  {id:"Y12",lvl:"amber",loc:"§7.4",p:"静音+勿扰叠加交互未定义。",s:"定义两开关组合状态行为"}
+  {id:"D1",lvl:"red",st:"done",loc:"§7.5 vs §7.4 vs §1.3",p:"勿扰态下「来电是否弹窗」三处矛盾：矩阵写\"不弹窗\"、语义写\"保留部分弹窗\"、目标写\"不错过关键来电\"，与 benchmark「屏蔽部分弹窗」冲突。",s:"统一勿扰保留弹窗白名单，明确来电在勿扰/静音下行为，并入状态矩阵",res:"§7.2 来电×状态豁免矩阵 + §7.5 状态矩阵（V2.2 拍板落地）",cross:"X1"},
+  {id:"D2",lvl:"red",st:"done",loc:"§三 vs §7.5",p:"1s 轮询功耗未评估，轮询 vs BLE notify 功耗量级差异大，未与长续航/低电量调和。",s:"明确 1s 轮询归属端，给 BLE 唤醒频率与功耗评估",res:"改 BLE GATT notify 事件驱动，弃 1s 轮询（V2.1，§三/§八）"},
+  {id:"D3",lvl:"red",st:"open",loc:"§四 + §八",p:"BLE 协议未到可实现粒度：GATT/特征值/编码/分包/最大长度全未定义，字段必然超单包。",s:"补全协议层或降级为需求层文档并单列协议方案",res:"🔴 未解决：GATT Profile/特征值/编码/分包/MTU 仍待固件（§十二#2、§十三D 类阻塞项）"},
+  {id:"Y1",lvl:"amber",st:"done",loc:"§7.3/§7.5",p:"消息列表掉电/重启持久化未定义（RAM vs Flash）。",s:"明确存储介质与断电行为",res:"ADR 0001 消息列表不持久化 + §7.3（V2.5）",cross:"X3"},
+  {id:"Y2",lvl:"amber",st:"done",loc:"§6.2/§五",p:"断连回连：断连瞬间/重连中通知缓存策略未定义。",s:"定义断连窗口处理+回连补同步",res:"§7.5 断连暂存 20 条、回连补推（V2.4）",cross:"X2"},
+  {id:"Y3",lvl:"amber",st:"done",loc:"§九",p:"低电量降级未定义。",s:"补低电量行为矩阵",res:"§7.5 低电量降级：进长续航按长续航策略（V2.4）"},
+  {id:"Y4",lvl:"amber",st:"partial",loc:"§三/§五",p:"多设备并发/BLE 通道竞争（通知突发 vs 音乐控制）未评估。",s:"评估同链路并发，定义优先级/背压",res:"⚠️ 已入 §十二#8 待固件：BLE 同链路并发/背压（V2.8）"},
+  {id:"Y5",lvl:"amber",st:"done",loc:"§7.3/§八",p:"timestamp 来源+跨时区显示未定义。",s:"定义时间戳来源与展示时区",res:"§八 timestamp 来源=App 时间、码表本地时区展示（V2.4）",cross:"X4"},
+  {id:"Y6",lvl:"amber",st:"partial",loc:"§7.1",p:"通知弹窗与既有弹窗体系（防盗/计圈/导航/智联）优先级互斥未定义。",s:"定义弹窗体系中的优先级",res:"§5.2.1 弹窗全局优先级（V2.8），但「通知 vs 导航」档待 PM 复核"},
+  {id:"Y7",lvl:"amber",st:"done",loc:"§7.5",p:"长续航行\"声音\"列填\"历史资料记录关闭\"，矩阵错位。",s:"修正列语义，补长续航声音行为",res:"V2.3 修正状态矩阵列错位"},
+  {id:"Y8",lvl:"amber",st:"done",loc:"§7.4",p:"漏 benchmark 勿扰细节：声音按钮静音不可调、被屏蔽弹窗不补弹。",s:"补入勿扰行为描述",res:"§7.4 补勿扰细节（V2.1）",cross:"X5"},
+  {id:"Y9",lvl:"amber",st:"done",loc:"§7.2",p:"来电 5s 自动关与\"关闭\"选项，benchmark 未提。",s:"标注扩展待确认",res:"§7.2 来电不自动关闭，持续到操作/通话结束（V2.4）"},
+  {id:"Y10",lvl:"amber",st:"done",loc:"§5.1/§7.1",p:"同 1s 窗口多条消息全入列还是仅最新未交代。",s:"明确同窗口多消息写入策略",res:"§7.1 条数聚合 + §7.3 列表逐条占位（V2.5）",cross:"X6"},
+  {id:"Y11",lvl:"amber",st:"done",loc:"§九",p:"C716/PV3.2 通知能力为无来源断言。",s:"标待确认或补来源",res:"§九 改 PV3.2/待确认口径（V2.7）"},
+  {id:"Y12",lvl:"amber",st:"done",loc:"§7.4",p:"静音+勿扰叠加交互未定义。",s:"定义两开关组合状态行为",res:"§7.4 静音+勿扰叠加行为（V2.3）"}
 ];
 const QA = [
-  {id:"Q1",lvl:"red",loc:"§7.5",p:"状态矩阵声音/屏幕列在静音/勿扰行填\"不弹窗\"，声音行为缺失，与 §7.4 不自洽。",s:"矩阵改四列逐格填；勿扰声音=不响（按钮静音不可调）",cross:"X1"},
-  {id:"Q2",lvl:"red",loc:"§7.5×§7.2×§二",p:"来电在熄屏/休眠/勿扰/长续航下是否豁免未定义，L1「勿扰不错过教练来电」无法判定。",s:"增补来电豁免矩阵，逐状态定义响铃/亮屏/弹窗/按钮",cross:"X1"},
-  {id:"Q3",lvl:"red",loc:"§7.5×§12#6",p:"长续航未闭环：声音列错位、是否缓存待确认、进出条件未定义。",s:"列\"丢弃vs缓存vs退出补弹\"为阻塞必答项，补状态入口/出口"},
-  {id:"Q4",lvl:"red",loc:"§7.1×§7.3×§八",p:"去重/聚合语义冲突：弹窗\"条数\"聚合 vs 列表\"按条满容量\"逐条 vs id 待确认。",s:"定义列表条目=事件 vs App+联系人聚合；定义同 id 更新/追加",cross:"X6"},
-  {id:"Y1",lvl:"amber",loc:"§7.3",p:"清空无二次确认/撤销，误触不可逆。",s:"加二次确认或 N 秒可撤销"},
-  {id:"Y2",lvl:"amber",loc:"§6.4",p:"同步中无超时出口；下发中途断连半配置恢复未定义。",s:"定义同步超时+断连后哪侧为准"},
-  {id:"Y3",lvl:"amber",loc:"§7.1",p:"勿扰\"被屏蔽弹窗不补弹\"未显式覆盖。",s:"补一句不补弹",cross:"X5"},
-  {id:"Y4",lvl:"amber",loc:"§7.4",p:"漏声音按钮静音不可调；勿扰期间调音量恢复基准不明。",s:"补声音按钮静音不可调+恢复快照点",cross:"X5"},
-  {id:"Y5",lvl:"amber",loc:"§7.2",p:"来电按钮系统不支持时隐藏还是置灰未定义。",s:"补不支持即隐藏或置灰+toast"},
-  {id:"Y6",lvl:"amber",loc:"§6.2/§五",p:"断连/回连列表策略未定义（保留/漏收/补发/合并）。",s:"补断连/回连两态列表行为",cross:"X2"},
-  {id:"Y7",lvl:"amber",loc:"§5.1",p:"当秒多条是否全入列表、弹窗只展示最新未写清。",s:"明确弹窗=当秒最新、列表=当秒全部",cross:"X6"},
-  {id:"Y8",lvl:"amber",loc:"§八",p:"时间戳来源、缺失占位、跨时区排序键未定义。",s:"定义时间戳来源+缺失占位+排序键",cross:"X4"},
-  {id:"Y9",lvl:"amber",loc:"§7.3",p:"重启/掉电后列表是否持久化未定义。",s:"定义存储介质与重启恢复",cross:"X3"},
-  {id:"Y10",lvl:"amber",loc:"§7.5/§十二",p:"低电量/临界电量通知行为、长续航触发条件未定义。",s:"补低电量分级降级策略"},
-  {id:"Y11",lvl:"amber",loc:"§5.2",p:"来电期间来第二个来电（来电打断来电）未定义。",s:"定义来电期间新来电排队/替换"},
-  {id:"Y12",lvl:"amber",loc:"§7.3",p:"清空与满容量同时、详情页条目被移除的竞态未定义。",s:"补竞态规则"},
-  {id:"Y13",lvl:"amber",loc:"§十二#8",p:"未知 icon/联系人/缺字□兜底样式待确认，属弹窗必有元素。",s:"标注兜底样式为测试阻塞必答项"},
-  {id:"Y14",lvl:"amber",loc:"§九",p:"机型边界：C506 小屏与 C706 弹窗布局/截断是否一致未定义。",s:"补按机型矩阵截断策略"}
+  {id:"Q1",lvl:"red",st:"done",loc:"§7.5",p:"状态矩阵声音/屏幕列在静音/勿扰行填\"不弹窗\"，声音行为缺失，与 §7.4 不自洽。",s:"矩阵改四列逐格填；勿扰声音=不响（按钮静音不可调）",res:"V2.3 修正状态矩阵声音/屏幕列",cross:"X1"},
+  {id:"Q2",lvl:"red",st:"done",loc:"§7.5×§7.2×§二",p:"来电在熄屏/休眠/勿扰/长续航下是否豁免未定义，L1「勿扰不错过教练来电」无法判定。",s:"增补来电豁免矩阵，逐状态定义响铃/亮屏/弹窗/按钮",res:"§7.2 来电×状态豁免矩阵（V2.2）",cross:"X1"},
+  {id:"Q3",lvl:"red",st:"done",loc:"§7.5×§12#6",p:"长续航未闭环：声音列错位、是否缓存待确认、进出条件未定义。",s:"列\"丢弃vs缓存vs退出补弹\"为阻塞必答项，补状态入口/出口",res:"§7.5 长续航策略（接收不打扰）+ 状态矩阵闭环（V2.2）"},
+  {id:"Q4",lvl:"red",st:"done",loc:"§7.1×§7.3×§八",p:"去重/聚合语义冲突：弹窗\"条数\"聚合 vs 列表\"按条满容量\"逐条 vs id 待确认。",s:"定义列表条目=事件 vs App+联系人聚合；定义同 id 更新/追加",res:"§7.1 条数聚合 + §7.3 列表逐条占位（V2.5）",cross:"X6"},
+  {id:"Y1",lvl:"amber",st:"done",loc:"§7.3",p:"清空无二次确认/撤销，误触不可逆。",s:"加二次确认或 N 秒可撤销",res:"§7.3 清空二次确认（V2.5）"},
+  {id:"Y2",lvl:"amber",st:"done",loc:"§6.4",p:"同步中无超时出口；下发中途断连半配置恢复未定义。",s:"定义同步超时+断连后哪侧为准",res:"§6.4 同步超时 5s 回失败态（V2.4）"},
+  {id:"Y3",lvl:"amber",st:"done",loc:"§7.1",p:"勿扰\"被屏蔽弹窗不补弹\"未显式覆盖。",s:"补一句不补弹",res:"§7.4 被屏蔽弹窗关闭后不补弹（V2.1）",cross:"X5"},
+  {id:"Y4",lvl:"amber",st:"done",loc:"§7.4",p:"漏声音按钮静音不可调；勿扰期间调音量恢复基准不明。",s:"补声音按钮静音不可调+恢复快照点",res:"§7.4 勿扰声音快照点（进入勿扰前一刻，V2.8）",cross:"X5"},
+  {id:"Y5",lvl:"amber",st:"partial",loc:"§7.2",p:"来电按钮系统不支持时隐藏还是置灰未定义。",s:"补不支持即隐藏或置灰+toast",res:"⚠️ 原型 FIELD-06 不支持则隐藏；具体视觉待设计（§十二#7）"},
+  {id:"Y6",lvl:"amber",st:"done",loc:"§6.2/§五",p:"断连/回连列表策略未定义（保留/漏收/补发/合并）。",s:"补断连/回连两态列表行为",res:"§7.5 断连/回连列表行为（V2.4）",cross:"X2"},
+  {id:"Y7",lvl:"amber",st:"done",loc:"§5.1",p:"当秒多条是否全入列表、弹窗只展示最新未写清。",s:"明确弹窗=当秒最新、列表=当秒全部",res:"§7.1/§7.3 当秒多条策略（V2.5）",cross:"X6"},
+  {id:"Y8",lvl:"amber",st:"done",loc:"§八",p:"时间戳来源、缺失占位、跨时区排序键未定义。",s:"定义时间戳来源+缺失占位+排序键",res:"§八 时间戳来源+排序键（V2.4）",cross:"X4"},
+  {id:"Y9",lvl:"amber",st:"done",loc:"§7.3",p:"重启/掉电后列表是否持久化未定义。",s:"定义存储介质与重启恢复",res:"ADR 0001 不持久化（V2.5）",cross:"X3"},
+  {id:"Y10",lvl:"amber",st:"done",loc:"§7.5/§十二",p:"低电量/临界电量通知行为、长续航触发条件未定义。",s:"补低电量分级降级策略",res:"§7.5 低电量/长续航触发（V2.4）"},
+  {id:"Y11",lvl:"amber",st:"done",loc:"§5.2",p:"来电期间来第二个来电（来电打断来电）未定义。",s:"定义来电期间新来电排队/替换",res:"§7.2 来电打断来电=最新替换（V2.4）"},
+  {id:"Y12",lvl:"amber",st:"done",loc:"§7.3",p:"清空与满容量同时、详情页条目被移除的竞态未定义。",s:"补竞态规则",res:"§7.3 清空×满容量竞态：清空优先（V2.8）"},
+  {id:"Y13",lvl:"amber",st:"partial",loc:"§十二#8",p:"未知 icon/联系人/缺字□兜底样式待确认，属弹窗必有元素。",s:"标注兜底样式为测试阻塞必答项",res:"⚠️ 未知 icon/兜底视觉仍待设计（§十二#7）"},
+  {id:"Y14",lvl:"amber",st:"partial",loc:"§九",p:"机型边界：C506 小屏与 C706 弹窗布局/截断是否一致未定义。",s:"补按机型矩阵截断策略",res:"⚠️ 6 系小屏降级已入 §十二#9 待固件/设计（V2.8）"}
 ];
 const QA_T = [
-  {id:"T1",loc:"§7.1",p:"超出滚动/省略",s:"二选一：超 10 字省略加\"…\"或滚动 1 次停末尾"},
-  {id:"T2",loc:"§7.1×§八",p:"10 字限制 vs 10 字符",s:"统一\"10 显示字符位\"，定义 CJK/ASCII 混排计法"},
-  {id:"T3",loc:"§7.1×§7.2",p:"5 秒倒计时关闭",s:"定义计时起点+容差；来电 5s 系 PRD 新增待确认"},
-  {id:"T4",loc:"§7.5",p:"长续航声音列\"历史资料记录关闭\"",s:"改记录暂停/恢复，定义恢复时机"},
-  {id:"T5",loc:"§6.4",p:"同步中防重复提交",s:"定义按钮置灰时长=同步耗时上限"},
-  {id:"T6",loc:"§八",p:"unread_count 范围待确认",s:"定义条数上限与截断（如 99+）"},
-  {id:"T7",loc:"§三",p:"1s 轮询读取",s:"定义容差 ±100ms + 轮询与 BLE 去重关系"}
+  {id:"T1",st:"done",loc:"§7.1",p:"超出滚动/省略",s:"二选一：超 10 字省略加\"…\"或滚动 1 次停末尾",res:"§7.1 超出省略+…不滚动"},
+  {id:"T2",st:"done",loc:"§7.1×§八",p:"10 字限制 vs 10 字符",s:"统一\"10 显示字符位\"，定义 CJK/ASCII 混排计法",res:"统一显示字符位口径（CJK1/ASCII0.5）"},
+  {id:"T3",st:"done",loc:"§7.1×§7.2",p:"5 秒倒计时关闭",s:"定义计时起点+容差；来电 5s 系 PRD 新增待确认",res:"普通通知 5s；来电已改不自动关闭"},
+  {id:"T4",st:"done",loc:"§7.5",p:"长续航声音列\"历史资料记录关闭\"",s:"改记录暂停/恢复，定义恢复时机",res:"V2.3 修正声音列"},
+  {id:"T5",st:"done",loc:"§6.4",p:"同步中防重复提交",s:"定义按钮置灰时长=同步耗时上限",res:"§6.4 同步超时 5s"},
+  {id:"T6",st:"done",loc:"§八",p:"unread_count 范围待确认",s:"定义条数上限与截断（如 99+）",res:"§7.1 显示上限 99+"},
+  {id:"T7",st:"done",loc:"§三",p:"1s 轮询读取",s:"定义容差 ±100ms + 轮询与 BLE 去重关系",res:"已改 BLE notify，轮询不适用"}
 ];
 const CROSS = [
-  {id:"X1",t:"状态机/勿扰/来电矛盾",d:"D1",q:"Q1、Q2",desc:"勿扰态来电是否弹窗三处矛盾；矩阵声音/屏幕列错位、静音/勿扰声音行为缺失。最严重，动摇 L1–L2 核心价值。"},
-  {id:"X2",t:"断连回连策略",d:"Y2",q:"Y6",desc:"断连窗口消息缓存、回连补推/合并未定义。"},
-  {id:"X3",t:"消息列表持久化",d:"Y1",q:"Y9",desc:"RAM 易失 vs Flash 持久未定义；重启/掉电后列表行为悬空。"},
-  {id:"X4",t:"时间戳/跨时区",d:"Y5",q:"Y8",desc:"时间戳来源、排序键、跨时区显示未定义。"},
-  {id:"X5",t:"勿扰细节遗漏",d:"Y8",q:"Y3、Y4",desc:"benchmark「声音按钮静音不可调」「被屏蔽弹窗不补弹」PRD 漏带。"},
-  {id:"X6",t:"同窗口多消息/聚合语义",d:"Y10",q:"Y7、Q4",desc:"当秒多条全入列还是仅最新；去重/聚合与 20 条容量语义冲突。"}
+  {id:"X1",t:"状态机/勿扰/来电矛盾",d:"D1",q:"Q1、Q2",desc:"勿扰态来电是否弹窗三处矛盾；矩阵声音/屏幕列错位、静音/勿扰声音行为缺失。最严重，动摇 L1–L2 核心价值。✅ V2.2 来电豁免矩阵 + V2.3 矩阵修正解决。"},
+  {id:"X2",t:"断连回连策略",d:"Y2",q:"Y6",desc:"断连窗口消息缓存、回连补推/合并未定义。✅ §7.5 断连暂存 20 条解决。"},
+  {id:"X3",t:"消息列表持久化",d:"Y1",q:"Y9",desc:"RAM 易失 vs Flash 持久未定义；重启/掉电后列表行为悬空。✅ ADR 0001 不持久化解决。"},
+  {id:"X4",t:"时间戳/跨时区",d:"Y5",q:"Y8",desc:"时间戳来源、排序键、跨时区显示未定义。✅ §八 timestamp=App 时间解决。"},
+  {id:"X5",t:"勿扰细节遗漏",d:"Y8",q:"Y3、Y4",desc:"benchmark「声音按钮静音不可调」「被屏蔽弹窗不补弹」PRD 漏带。✅ §7.4 补全解决。"},
+  {id:"X6",t:"同窗口多消息/聚合语义",d:"Y10",q:"Y7、Q4",desc:"当秒多条全入列还是仅最新；去重/聚合与 20 条容量语义冲突。✅ §7.1 聚合 + §7.3 逐条解决。"}
 ];
 
 const LVL = {red:{label:"🔴 严重",cls:"bg-red-50 border-red-300",tag:"text-red-700 bg-red-100"},amber:{label:"🟡 建议",cls:"bg-amber-50 border-amber-300",tag:"text-amber-700 bg-amber-100"},orange:{label:"🟠 不可测试",cls:"bg-orange-50 border-orange-300",tag:"text-orange-700 bg-orange-100"}};
+const ST = {done:{l:"✅ 已解决",cls:"text-green-700 bg-green-100",txt:"text-green-700"},partial:{l:"⚠️ 部分解决",cls:"text-amber-700 bg-amber-100",txt:"text-amber-700"},open:{l:"❌ 未解决",cls:"text-red-700 bg-red-100",txt:"text-red-700"}};
 
+function allItems(){ return [...DEV, ...QA, ...QA_T]; }
 function statCards(){
-  const devRed=DEV.filter(i=>i.lvl==="red").length, devAmber=DEV.filter(i=>i.lvl==="amber").length;
-  const qaRed=QA.filter(i=>i.lvl==="red").length, qaAmber=QA.filter(i=>i.lvl==="amber").length;
+  const items = allItems();
+  const done=items.filter(i=>i.st==="done").length;
+  const partial=items.filter(i=>i.st==="partial").length;
+  const open=items.filter(i=>i.st==="open").length;
   const cards=[
-    {n:devRed+qaRed,l:"🔴 严重问题",c:"text-red-600"},
-    {n:devAmber+qaAmber,l:"🟡 建议",c:"text-amber-600"},
-    {n:QA_T.length,l:"🟠 不可测试",c:"text-orange-600"},
+    {n:done,l:"✅ 已解决",c:"text-green-600"},
+    {n:partial,l:"⚠️ 部分解决",c:"text-amber-600"},
+    {n:open,l:"❌ 未解决",c:"text-red-600"},
     {n:CROSS.length,l:"🔗 交叉命中",c:"text-purple-600"}
   ];
   document.getElementById("statCards").innerHTML = cards.map(k=>`
@@ -119,16 +130,19 @@ function statCards(){
 }
 function itemHtml(it, prefix){
   const l=LVL[it.lvl];
+  const st=ST[it.st];
   const cross=it.cross?`<span class="ml-2 text-[10px] font-bold badge-cross px-1.5 py-0.5 rounded" title="交叉命中 ${it.cross}">交叉·${it.cross}</span>`:"";
   return `<div class="expandable card bg-white border ${l.cls} rounded-lg p-3 cursor-pointer" onclick="this.classList.toggle('open')">
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 flex-wrap">
       <span class="font-mono font-bold text-sm">${prefix}${it.id}</span>
       <span class="text-[10px] px-1.5 py-0.5 rounded ${l.tag}">${l.label}</span>
-      <span class="text-xs text-gray-400">${it.loc}</span>${cross}
+      <span class="text-xs text-gray-400">${it.loc}</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded ${st.cls}">${st.l}</span>${cross}
     </div>
     <div class="detail mt-2 text-sm">
       <p class="text-gray-700">${it.p}</p>
       ${it.s?`<p class="text-gray-500 mt-1"><span class="font-medium">建议：</span>${it.s}</p>`:""}
+      <p class="mt-1 ${st.txt}"><span class="font-medium">解决落点：</span>${it.res}</p>
     </div>
   </div>`;
 }
@@ -153,8 +167,8 @@ function render(){
     `<h3 class="font-semibold mb-2">🟡 建议（${qaAmber.length}）</h3><div class="space-y-2 mb-4">${qaAmber.map(i=>itemHtml(i,"Q-")).join("")}</div>`+
     `<h3 class="font-semibold mb-2">🟠 不可测试（${QA_T.length}）</h3><div class="space-y-2">${QA_T.map(i=>`
       <div class="expandable card bg-white border border-orange-300 rounded-lg p-3 cursor-pointer" onclick="this.classList.toggle('open')">
-        <div class="flex items-center gap-2"><span class="font-mono font-bold text-sm">Q-${i.id}</span><span class="text-[10px] px-1.5 py-0.5 rounded text-orange-700 bg-orange-100">🟠 不可测试</span><span class="text-xs text-gray-400">${i.loc}</span></div>
-        <div class="detail mt-2 text-sm"><p class="text-gray-700">${i.p}</p><p class="text-gray-500 mt-1"><span class="font-medium">量化建议：</span>${i.s}</p></div>
+        <div class="flex items-center gap-2 flex-wrap"><span class="font-mono font-bold text-sm">Q-${i.id}</span><span class="text-[10px] px-1.5 py-0.5 rounded text-orange-700 bg-orange-100">🟠 不可测试</span><span class="text-xs text-gray-400">${i.loc}</span><span class="text-[10px] px-1.5 py-0.5 rounded ${ST[i.st].cls}">${ST[i.st].l}</span></div>
+        <div class="detail mt-2 text-sm"><p class="text-gray-700">${i.p}</p><p class="text-gray-500 mt-1"><span class="font-medium">量化建议：</span>${i.s}</p><p class="mt-1 ${ST[i.st].txt}"><span class="font-medium">解决落点：</span>${i.res}</p></div>
       </div>`).join("")}</div>`;
 }
 function switchView(v){

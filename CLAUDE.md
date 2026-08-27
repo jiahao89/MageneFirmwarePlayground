@@ -6,7 +6,7 @@ MFP 是迈金固件 PM 个人使用的 **Claude Code 原生工作台**：竞品�
 
 - **知识层**（`knowledge-base/`）与 **领域 skill**（`skills/`）为自包含实体文件，从 `Magene_PM_Workspace` 提取；workspace 保持只读、永不被 MFP 修改。
 - **原始 PRD 历史**（`01_工作台` 草稿、`02_历史归档`）留在 workspace，MFP 运行时只读引用。
-- 本项目**不是 Web 应用**：`app/` `worker/` `db/` 已冻结（tag `web-baseline-20260813`），不投入。
+- 本项目**不是 Web 应用**：无前端代码，产出物通过飞书（文档）与 Figma（原型）呈现。
 
 ## 开工前必读（按顺序）
 
@@ -43,21 +43,22 @@ MFP 是迈金固件 PM 个人使用的 **Claude Code 原生工作台**：竞品�
 
 ### 4. 评审能力边界
 
-firmware-review 先跑扫「有没有/对不对」，人聚焦「好不好/该不该」。见 `knowledge-base/03_人群与方法论/评审能力边界.md`。
+AI 扫「有没有/对不对」（依据 `knowledge-base/03_人群与方法论/固件评审清单.md`），人聚焦「好不好/该不该」。见 `knowledge-base/03_人群与方法论/评审能力边界.md`。
 
 ## 工作流与触发词
 
 | 想做什么 | 说什么 | 编排 |
 |---------|--------|------|
-| 完整需求流程 | "开始需求XX / 写PRD / MFP流程" | `mfp-prd-flow`（Phase 间暂停确认） |
-| 单独评审 | "评审PRD XX" | `mfp-reviewer` → `firmware-review` |
+| 完整需求流程 | "开始需求XX / 写PRD / MFP流程" | `mfp-prd-flow`（Phase 间暂停确认，含 7.5 发布） |
+| 单独评审 | "评审PRD XX" | `mfp-reviewer`（读知识库评审清单） |
 | 只做竞品调研 | "调研XX功能" | `hardware-product-analysis` / `research` |
 | 设计/原型 | "出XX原型" | `magene-design` 路由 → `figma-lofi-prototype` / `drawio-skill` |
+| 发布飞书 | "发布PRD" | `scripts/md2lark.py` + `lark-cli` |
 | 交付归档 | "整理成飞书文档/PPT" | `lark-doc` / `pptx` / `docx` |
 
 ## Skill 来源约定（同名冲突裁决）
 
-MFP 只维护 **1 个本地 skill**（`firmware-review`），其余全部引用成熟件：
+MFP 维护 **3 个设计 skill**（`magene-design` / `figma-lofi-prototype` / `drawio-skill`），其余全部引用成熟件：
 
 | Skill | 来源 | 说明 |
 |-------|------|------|
@@ -65,8 +66,10 @@ MFP 只维护 **1 个本地 skill**（`firmware-review`），其余全部引用�
 | `hardware-product-analysis` | 全局 `~/.claude/skills/`（官方 PM skill） | 竞品调研 |
 | `research` / `grill-me` / `domain-modeling` / `wait-what` | `mattpocock-skills` 插件（Claude Code 官方 marketplace，自动更新） | 需求澄清 / 调研 / 对象建模 |
 | `docx` / `pptx` / `lark-doc` | 全局 `~/.claude/skills/` | 交付归档 |
-| `firmware-review` | MFP 本地 `.claude/skills/firmware-review/` | ★ 唯一本地 skill，固件双视角评审 |
-| `magene-design` / `figma-lofi-prototype` / `drawio-skill` | `skills/`（workspace 副本，源 `~/.agents/skills/`） | 设计路由 / 低保真 / 图 |
+| `writing-plans` / `verification-before-completion` | 全局 `~/.claude/skills/superpowers/` | 流程骨架（澄清/计划/自检） |
+| `magene-design` / `figma-lofi-prototype` / `drawio-skill` | `skills/`（workspace 副本，源 `~/.agents/skills/`，均含 Codex 双入口） | 设计路由 / 低保真 / 图 |
+
+> 固件双视角评审**不再用 skill**：读 `knowledge-base/03_人群与方法论/固件评审清单.md`（原 firmware-review skill 已降级删除）。
 
 > 全局 skill 数量庞大，同名/近义 skill 可能互相干扰。各 Phase 已在上方编排表写死 skill 名，AI 按编排执行，不得自行替换。
 
@@ -76,8 +79,9 @@ MFP 只维护 **1 个本地 skill**（`firmware-review`），其余全部引用�
 
 ## 产出规范
 
-- 输出目录：`output/{需求名}/`，命名：`00-竞品调研` → `01-需求分析` → `02-PRD` → `03-评审意见`+`03-评审报告.html` → `04-原型输入` → `05-原型验收`
-- HTML 一律单文件（Tailwind CDN + 原生 JS），浏览器直开；评审 HTML 含统计卡片、🔴→🟡→🟢 排序、可展开卡片、双视角交叉命中标注
+- 输出目录：`output/{需求名}/`，命名：`00-竞品调研` → `01-需求分析` → `02-PRD` → `03-评审意见` → `04-原型输入` → `05-原型验收`
+- **全部产出为 Markdown，不生成 HTML**（评审报告、PRD 呈现一律 Markdown）
+- 飞书发布：`scripts/md2lark.py` + `lark-cli`，登记表 `output/{需求名}/_publish.json`，只发 `02-PRD.md` 终稿一份
 - 不确定标"待定"/"待确认"，**绝不编造假数据**；竞品搜不到明说搜不到
 - 写作风格见 [`config/product-line/码表/style.md`](config/product-line/码表/style.md)（结论先行、Toast 精确到字、超时精确标注、国内/海外标注、@人名）
 

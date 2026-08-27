@@ -1,107 +1,33 @@
 # MFP（MageneFirmwarePlayground）
 
-> ⚠️ **状态说明（2026-08-13）**：本项目已转型为 **Claude Code 原生工作流**（见 `CLAUDE.md` 与
-> `design/2026-08-13-MFP-执行方案.md`）。下方 vinext Web 应用骨架已**冻结**于 tag
-> `web-baseline-20260813`，停止投入；`app/` `worker/` `db/` 等目录仅作留档。
-> 团队共享需求出现时再解冻，届时知识同步方案另议。
+迈金固件 PM 个人的 **Claude Code / Codex 原生工作台**：竞品调研 → 需求分析 → PRD 撰写 → 双视角评审 → 原型输入 → 原型验收 → 发布飞书，全程在终端内完成。
 
----
+> **状态（2026-08-17，v3）**：Web 骨架已删除（历史存 tag `web-baseline-20260813`）。产出物通过**飞书 wiki**（PRD 终稿）与 **Figma**（原型）呈现，本地 git 是唯一事实源。
 
-# vinext-starter
+## 结构
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+| 目录 | 作用 |
+|---|---|
+| `knowledge-base/` | 知识层：BENCHMARK 事实源索引、6 层人群模型、PRD 模板、固件评审清单、四套设计系统 |
+| `config/product-line/码表/` | 产品线配置 + PRD 写作风格 + 成熟样本 |
+| `.claude/agents/` | 编排 Agent：`mfp-prd-flow`（主流程）、`mfp-reviewer`（评审） |
+| `skills/` | 设计三件套：`magene-design` / `figma-lofi-prototype` / `drawio-skill`（均含 Codex 双入口） |
+| `scripts/` | `md2lark.py`（PRD Markdown → 飞书 XML 转换器） |
+| `output/{需求名}/` | 产出区：`00-竞品调研` → `02-PRD` → `03-评审意见` → `04-原型输入` → `05-原型验收` |
+| `design/` | 方案文档（v1/v2/v3 演进） |
 
-## Prerequisites
+## 用法
 
-- Node.js `>=22.13.0`
+双端入口，触发词驱动：
 
-## Quick Start
+- Claude Code：读 `.claude/agents/` 编排，触发词「开始需求XX / 写PRD / 评审PRD XX / 调研XX / 出XX原型 / 发布PRD」
+- Codex：读 `AGENTS.md` 的「Codex 编排」章节，等价 Phase 顺序
 
-```bash
-npm install
-npm run dev
-npm run build
-```
+## 核心纪律
 
-This starter does not use `wrangler.jsonc`.
+1. **SSOT**：`~/Projects/Magene_PM_Workspace` 是唯一事实源，只读不写；AI 产出永不为事实源
+2. **不编造**：迈金专属行为/协议/硬件无依据一律标「待确认」
+3. **人群红线**：写 PRD 前必做 L1–L6 归位，L1–L3 ≥ 60%
+4. **产出 Markdown 化**：不生成 HTML，呈现交给飞书/Figma
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+详见 [`CLAUDE.md`](CLAUDE.md)（Claude Code 入口）、[`AGENTS.md`](AGENTS.md)（Codex 入口）、[`.ai_global_profile.md`](.ai_global_profile.md)（行为规范）。

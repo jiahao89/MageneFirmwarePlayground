@@ -1,0 +1,17 @@
+{
+  "feishu": {
+    "space_id": "7654036054210579680",
+    "parent_node_token": "O8XEwC82Pi8QXpkd1jDczMUYnVe",
+    "parent_title": "PRD",
+    "doc_token": "AY8gd4hRzoeoIdx6DkmcMrXNnxf",
+    "doc_title": "消息通知专项 PRD（V2.11）",
+    "last_version": "V2.11",
+    "published_at": "2026-08-17T15:00:00+08:00",
+    "publish_status": "需求层定稿；实现待冻结",
+    "source_commit": "04ae03a"
+  },
+  "figma": {
+    "file_key": "8G0hqaBAuDhLxE4bZYsl3W",
+    "link": "https://www.figma.com/design/8G0hqaBAuDhLxE4bZYsl3W"
+  }
+}

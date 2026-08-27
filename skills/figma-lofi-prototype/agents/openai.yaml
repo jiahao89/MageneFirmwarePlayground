@@ -1,0 +1,4 @@
+interface:
+  display_name: "Figma Low-Fidelity Prototype"
+  short_description: "在 Figma 生成结构化的产品原型图、低保真流程稿与线框流程"
+  default_prompt: "Use $figma-lofi-prototype to turn this product flow into a readable low-fidelity Figma prototype map with clear pages, flows, and branches."

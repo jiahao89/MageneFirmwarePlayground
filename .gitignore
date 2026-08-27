@@ -40,3 +40,9 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# local checkout accidentally created inside the repository
+/MageneFirmwarePlayground/
+
+# Python bytecode
+**/__pycache__/
