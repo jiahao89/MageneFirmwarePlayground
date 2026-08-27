@@ -1,16 +1,18 @@
-import { InMemoryBridge } from './in-memory-bridge';
+import { WorkPackageBridge } from './work-package-bridge';
+import { InMemoryWorkPackageStore } from './work-package-store';
 import { recognizeDeterministic } from './mock';
 import type { RawInput, RecognitionResult, PreflightResult } from './types';
 
 // ============================================================================
-// 浏览器 / 纯前端 mock 桥：不接真实 CLI，用确定性 mock 数据满足「mock 可被
-// 前端调用」。识别走内存确定性函数（浏览器无法 spawn 进程）。
+// 浏览器 / 纯前端 mock 桥：内存存储 + 确定性 mock 识别，满足「mock 可被前端调用」。
+// 浏览器无法 spawn 进程，识别走内存确定性函数。
 // ============================================================================
 
-export class BrowserMockBridge extends InMemoryBridge {
+export class BrowserMockBridge extends WorkPackageBridge {
   constructor(now?: () => string) {
     super({
       now: now ?? (() => new Date().toISOString()),
+      store: new InMemoryWorkPackageStore(),
       recognizeRaw: async (raw: RawInput): Promise<RecognitionResult> =>
         recognizeDeterministic({ text: raw.text, sourceDescription: raw.sourceDescription }),
       preflightRaw: async (): Promise<PreflightResult> => ({

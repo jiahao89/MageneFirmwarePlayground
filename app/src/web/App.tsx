@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { getBridge } from './bridge-adapter';
 import type { RecognitionResult, WorkPackage, BridgeErrorPayload } from '../bridge/index';
 
-// 最小可运行页面：验证 mock 可被前端调用。完整视觉设计不在 Issue #7 范围。
+// 最小可运行页面：验证文件读写服务（mock 模式）可被前端调用。完整视觉设计见 Issue #4/#5。
 
 const bridge = getBridge();
 
 type Phase =
   | { kind: 'idle' }
-  | { kind: 'recognized'; rawInputId: string; recognition: RecognitionResult }
+  | { kind: 'recognized'; requestId: string; recognition: RecognitionResult }
   | { kind: 'registered'; workPackage: WorkPackage }
   | { kind: 'error'; error: BridgeErrorPayload };
 
@@ -22,9 +22,9 @@ export function App() {
     setBusy(true);
     setPhase({ kind: 'idle' });
     try {
-      const raw = await bridge.saveRawInput({ text, sourceDescription: source });
-      const recognition = await bridge.recognize(raw.rawInputId);
-      setPhase({ kind: 'recognized', rawInputId: raw.rawInputId, recognition });
+      const wp = await bridge.saveRawInput({ text, sourceDescription: source });
+      const recognition = await bridge.recognize(wp.requestId);
+      setPhase({ kind: 'recognized', requestId: wp.requestId, recognition });
     } catch (e) {
       setPhase({ kind: 'error', error: toPayload(e) });
     } finally {
@@ -36,7 +36,7 @@ export function App() {
     if (phase.kind !== 'recognized') return;
     setBusy(true);
     try {
-      const wp = await bridge.register(phase.rawInputId);
+      const wp = await bridge.register(phase.requestId);
       await bridge.launch(wp.requestId);
       const updated = await bridge.readWorkPackage(wp.requestId);
       setPhase({ kind: 'registered', workPackage: updated });
@@ -56,7 +56,7 @@ export function App() {
   return (
     <main className="shell">
       <h1>MFP 本地工作台（MVP 骨架）</h1>
-      <p className="muted">桥接契约为 mock 模式，验证「前端可调用 bridge」。真实 CLI 由后续 Issue 接入。</p>
+      <p className="muted">桥接为 mock 模式（内存存储），验证「文件读写服务」契约。真实 CLI 由后续 Issue 接入。</p>
 
       <section className="panel">
         <label>原始需求</label>
@@ -101,8 +101,6 @@ export function App() {
               <dd>{phase.recognition.rewrittenRequirement}</dd>
               <dt>置信度</dt>
               <dd>{phase.recognition.confidence}</dd>
-              <dt>缺失信息</dt>
-              <dd>{phase.recognition.missingInformation.join('；')}</dd>
             </dl>
           </div>
         )}
@@ -114,6 +112,8 @@ export function App() {
               <dd>{phase.workPackage.requestId}</dd>
               <dt>状态</dt>
               <dd>{phase.workPackage.status}</dd>
+              <dt>任务卡阶段</dt>
+              <dd>{phase.workPackage.taskCard?.currentPhase ?? '—'}</dd>
               <dt>sessionId</dt>
               <dd>{phase.workPackage.session.sessionId ?? '—'}</dd>
             </dl>

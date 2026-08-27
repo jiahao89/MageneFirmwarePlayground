@@ -2,9 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { BrowserMockBridge } from '../bridge/browser-mock';
 import type {
   MfpBridge,
-  RawInput,
-  RecognitionResult,
   WorkPackage,
+  RecognitionResult,
   SaveRawInputRequest,
   LaunchResult,
   PreflightResult,
@@ -14,8 +13,8 @@ import type {
 // 前端桥接适配器：
 //  - 运行在 Tauri 桌面壳内（window.__TAURI_INTERNALS__ 存在）→ 走 invoke（命令名
 //    与 src-tauri/src/commands.rs 对齐）
-//  - 纯浏览器 / dev（无 Tauri）→ 走确定性 mock（BrowserMockBridge）
-// Issue #7 交付 mock 路径；真实 invoke 命令与 Rust 层在壳编译后联调（Issue #6）。
+//  - 纯浏览器 / dev（无 Tauri）→ 走确定性 mock（BrowserMockBridge，内存存储）
+// Issue #2 交付文件读写服务；真实 invoke 命令与 Rust 层在壳编译后联调（Issue #6）。
 // ============================================================================
 
 declare global {
@@ -30,14 +29,20 @@ function isTauri(): boolean {
 
 /** Tauri 壳内：把 MfpBridge 操作映射到 Rust 命令。 */
 class TauriBridge implements MfpBridge {
-  saveRawInput(req: SaveRawInputRequest): Promise<RawInput> {
-    return invoke<RawInput>('save_raw_input', { req });
+  saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
+    return invoke<WorkPackage>('save_raw_input', { req });
   }
-  recognize(rawInputId: string): Promise<RecognitionResult> {
-    return invoke<RecognitionResult>('recognize', { rawInputId });
+  recognize(requestId: string): Promise<RecognitionResult> {
+    return invoke<RecognitionResult>('recognize', { requestId });
   }
-  register(rawInputId: string): Promise<WorkPackage> {
-    return invoke<WorkPackage>('register', { rawInputId });
+  register(requestId: string): Promise<WorkPackage> {
+    return invoke<WorkPackage>('register', { requestId });
+  }
+  listWorkPackages(): Promise<WorkPackage[]> {
+    return invoke<WorkPackage[]>('list_work_packages');
+  }
+  readWorkPackage(requestId: string): Promise<WorkPackage> {
+    return invoke<WorkPackage>('read_work_package', { requestId });
   }
   preflight(requestId: string): Promise<PreflightResult> {
     return invoke<PreflightResult>('preflight', { requestId });
@@ -48,9 +53,6 @@ class TauriBridge implements MfpBridge {
   resume(requestId: string): Promise<LaunchResult> {
     return invoke<LaunchResult>('resume', { requestId });
   }
-  readWorkPackage(requestId: string): Promise<WorkPackage> {
-    return invoke<WorkPackage>('read_work_package', { requestId });
-  }
   answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('answer_question', { requestId, questionId, answer });
   }
@@ -59,6 +61,9 @@ class TauriBridge implements MfpBridge {
   }
   complete(requestId: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('complete', { requestId });
+  }
+  archive(requestId: string): Promise<WorkPackage> {
+    return invoke<WorkPackage>('archive', { requestId });
   }
 }
 

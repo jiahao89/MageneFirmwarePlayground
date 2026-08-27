@@ -26,6 +26,7 @@ function valid(): WorkPackage {
     status: 'pending_launch',
     originalInput: { rawInputId: 'RAW-1', text: 'hello', createdAt: 't' },
     recognition: null,
+    taskCard: null,
     questions: [],
     revisionComments: [],
     runLog: [],
@@ -56,6 +57,13 @@ describe('工作包 malformed 状态处理', () => {
     const bad = { requestId: 'REQ-1', status: 'completed' };
     const res = parseWorkPackage(JSON.stringify(bad));
     expect(res.ok).toBe(false);
+  });
+
+  it('非法任务卡 → malformed', () => {
+    const bad = { ...valid(), taskCard: { currentPhase: 123, goal: 'x' } };
+    const res = parseWorkPackage(JSON.stringify(bad));
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toMatch(/任务卡非法/);
   });
 
   it('合法工作包 → ok', () => {

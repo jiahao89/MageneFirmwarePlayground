@@ -1,5 +1,6 @@
 import { BridgeError } from './errors';
 import { isPlainObject } from './util';
+import { validateTaskCard } from './task-card';
 import type { RecognitionResult, RecognitionCategory, RequestStatus, WorkPackage } from './types';
 
 // 结构校验（纯函数，无 node 依赖）：判定 Agent / CLI 输出是否 malformed。
@@ -46,6 +47,10 @@ export function validateWorkPackage(v: unknown): ParseResult<WorkPackage> {
     return { ok: false, reason: 'questions/revisionComments/runLog/artifacts 字段非法' };
   }
   if (!isPlainObject(o.session)) return { ok: false, reason: '缺少 session 元数据' };
+  if (o.taskCard !== null && o.taskCard !== undefined) {
+    const tv = validateTaskCard(o.taskCard);
+    if (!tv.ok) return { ok: false, reason: `任务卡非法：${tv.reason}` };
+  }
   return { ok: true, value: v as unknown as WorkPackage };
 }
 

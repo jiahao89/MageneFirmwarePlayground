@@ -10,13 +10,15 @@ pub fn run() {
             commands::save_raw_input,
             commands::recognize,
             commands::register,
+            commands::list_work_packages,
+            commands::read_work_package,
             commands::preflight,
             commands::launch,
             commands::resume,
-            commands::read_work_package,
             commands::answer_question,
             commands::submit_revision,
             commands::complete,
+            commands::archive,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
