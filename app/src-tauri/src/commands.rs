@@ -1,150 +1,179 @@
-//! Rust 命令层：镜像 `src/bridge` 的 MfpBridge 契约。
+//! Tauri 命令层：把前端 `invoke` 调用转发到 Node 桥接服务。
 //!
-//! ⚠️ 本文件为脚手架，本机未装 Rust、尚未编译验证。各命令体为占位（返回错误），
-//! 待以下 Issue 填充实现：
-//! - Issue #2：工作包状态机与文件持久化（register / read_work_package / complete / archive / list）
-//! - Issue #3：真实 Claude Code CLI 适配与终端启动（recognize / launch / resume）
-//! - Issue #6：桥接联调与跨平台打包（接入真实命令 + macOS/Windows 验收）
+//! 设计（Issue #6，避免两套互相矛盾的状态机）：
+//! - 命令名与 `app/src/web/bridge-adapter.ts` 的 invoke 名一一对应；
+//! - 参数形状与 TS 契约一致（如 `saveRawInput` 的 `{ req }`），零转换透传；
+//! - 返回值是桥接服务的 JSON 原样透传（`serde_json::Value`），Rust 不镜像
+//!   工作包类型、不重新解释字段——契约的唯一事实来源仍是 `src/bridge/types.ts`；
+//! - 错误取桥接层可行动消息（`error.message`）作为 invoke 的 `Err(String)`。
+//!
+//! 安全：不保存 / 不记录凭据；所有子进程调用均为参数数组，用户文本不进入命令行。
 
+use crate::bridge_client::{
+    find_in_path, pick_first_existing, resolve_root, server_script_candidates, BridgeClient,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use tauri::State;
 
-// —— 类型定义（与 src/bridge/types.ts 对齐，字段名 camelCase 经 serde 转换）——
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RawInput {
-    pub raw_input_id: String,
-    pub text: String,
-    pub source_description: Option<String>,
-    pub created_at: String,
-}
+// —— 输入类型（仅 invoke 入参需要序列化；输出一律 Value 透传）——
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvidenceReference {
-    pub kind: String,
-    #[serde(rename = "ref")]
-    pub reference: String,
-    pub note: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RecognitionResult {
-    pub category: String,
-    pub rewritten_requirement: String,
-    pub user: String,
-    pub scenario: String,
-    pub goal: String,
-    pub scope_clues: Vec<String>,
-    pub known_constraints: Vec<String>,
-    pub missing_information: Vec<String>,
-    pub evidence: Vec<EvidenceReference>,
-    pub duplicate_candidates: Vec<String>,
-    pub confidence: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskCard {
-    pub current_phase: String,
-    pub goal: String,
-    pub confirmed_scope: Vec<String>,
-    pub unresolved_questions: Vec<String>,
-    pub allowed_context: Vec<String>,
-    pub expected_outputs: Vec<String>,
-    pub write_back_rules: Vec<String>,
-    pub pause_conditions: Vec<String>,
-    pub prohibited_actions: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkPackage {
-    pub request_id: String,
-    pub raw_input_id: String,
-    pub status: String,
-    pub original_input: RawInput,
-    pub recognition: Option<RecognitionResult>,
-    pub task_card: Option<TaskCard>,
-    pub questions: Vec<serde_json::Value>,
-    pub revision_comments: Vec<serde_json::Value>,
-    pub prd_path: Option<String>,
-    pub prd_version: Option<u32>,
-    pub run_log: Vec<serde_json::Value>,
-    pub session: serde_json::Value,
-    pub artifacts: Vec<String>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveRawInputRequest {
     pub text: String,
     pub source_description: Option<String>,
 }
 
-// —— 命令（占位：契约形状，待 Issue #2/#3/#6 填充实现）——
+/// 全局状态：懒启动的桥接服务客户端（首次调用时拉起，崩溃后自动重建）。
+#[derive(Default)]
+pub struct AppState {
+    client: Mutex<Option<BridgeClient>>,
+}
+
+impl AppState {
+    fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        let mut guard = self.client.lock().map_err(|_| "桥接客户端锁中毒".to_string())?;
+        if guard.is_none() {
+            *guard = Some(spawn_bridge_client()?);
+        }
+        let client = guard.as_mut().expect("client 刚被初始化");
+        match client.call(method, params) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if !client.alive() {
+                    *guard = None; // 服务已退出：下次调用重新拉起
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
+fn spawn_bridge_client() -> Result<BridgeClient, String> {
+    let node = resolve_node()?;
+    let script = resolve_script()?;
+    let cwd = std::env::current_dir().map_err(|e| format!("无法获取当前目录：{}", e))?;
+    let root = resolve_root(std::env::var("MFP_ROOT").ok().as_deref(), &cwd)?;
+    let adapter = std::env::var("MFP_ADAPTER").unwrap_or_else(|_| "claude".to_string());
+    let terminal = std::env::var("MFP_TERMINAL_APP").ok();
+    BridgeClient::spawn(&node, &script, &root, &adapter, terminal.as_deref())
+}
+
+fn resolve_node() -> Result<String, String> {
+    if let Ok(p) = std::env::var("MFP_NODE") {
+        if !p.trim().is_empty() && Path::new(&p).is_file() {
+            return Ok(p);
+        }
+    }
+    let names: &[&str] = if cfg!(windows) {
+        &["node.exe", "node.cmd", "node"]
+    } else {
+        &["node"]
+    };
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    find_in_path(&path_env, names)
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            "未找到 node 可执行文件：请安装 Node.js，或通过 MFP_NODE 环境变量指定路径".to_string()
+        })
+}
+
+fn resolve_script() -> Result<PathBuf, String> {
+    if let Ok(p) = std::env::var("MFP_BRIDGE_SERVER") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Ok(pb);
+        }
+    }
+    let cwd = std::env::current_dir().map_err(|e| format!("无法获取当前目录：{}", e))?;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let candidates = server_script_candidates(&cwd, exe_dir.as_deref());
+    pick_first_existing(&candidates).ok_or_else(|| {
+        format!(
+            "未找到桥接服务脚本 dist-bridge/bridge-server.cjs：请先运行 `npm run build:bridge`，或通过 MFP_BRIDGE_SERVER 环境变量指定（候选：{}）",
+            candidates
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("；")
+        )
+    })
+}
+
+// —— 命令：与 MfpBridge 契约一一对应（参数形状与 invoke 一致）——
 
 #[tauri::command]
-pub async fn save_raw_input(_req: SaveRawInputRequest) -> Result<WorkPackage, String> {
-    Err("save_raw_input: 脚手架占位（Issue #2 工作包持久化实现）".into())
+pub fn save_raw_input(state: State<'_, AppState>, req: SaveRawInputRequest) -> Result<Value, String> {
+    state.call("saveRawInput", json!({ "req": req }))
 }
 
 #[tauri::command]
-pub async fn recognize(_request_id: String) -> Result<RecognitionResult, String> {
-    Err("recognize: 脚手架占位（Issue #3 CLI 适配实现）".into())
+pub fn recognize(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("recognize", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn register(_request_id: String) -> Result<WorkPackage, String> {
-    Err("register: 脚手架占位（Issue #2 工作包状态机实现）".into())
+pub fn register(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("register", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn list_work_packages() -> Result<Vec<WorkPackage>, String> {
-    Err("list_work_packages: 脚手架占位（Issue #2）".into())
+pub fn list_work_packages(state: State<'_, AppState>) -> Result<Value, String> {
+    state.call("listWorkPackages", json!({}))
 }
 
 #[tauri::command]
-pub async fn read_work_package(_request_id: String) -> Result<WorkPackage, String> {
-    Err("read_work_package: 脚手架占位（Issue #2）".into())
+pub fn read_work_package(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("readWorkPackage", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn preflight(_request_id: String) -> Result<serde_json::Value, String> {
-    Err("preflight: 脚手架占位".into())
+pub fn preflight(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("preflight", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn launch(_request_id: String) -> Result<serde_json::Value, String> {
-    Err("launch: 脚手架占位（Issue #3 终端启动实现）".into())
+pub fn launch(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("launch", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn resume(_request_id: String) -> Result<serde_json::Value, String> {
-    Err("resume: 脚手架占位（Issue #3 会话恢复实现）".into())
+pub fn resume(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("resume", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn answer_question(
-    _request_id: String,
-    _question_id: String,
-    _answer: String,
-) -> Result<serde_json::Value, String> {
-    Err("answer_question: 脚手架占位".into())
+pub fn answer_question(
+    state: State<'_, AppState>,
+    request_id: String,
+    question_id: String,
+    answer: String,
+) -> Result<Value, String> {
+    state.call(
+        "answerQuestion",
+        json!({ "requestId": request_id, "questionId": question_id, "answer": answer }),
+    )
 }
 
 #[tauri::command]
-pub async fn submit_revision(_request_id: String, _comment: String) -> Result<serde_json::Value, String> {
-    Err("submit_revision: 脚手架占位".into())
+pub fn submit_revision(state: State<'_, AppState>, request_id: String, comment: String) -> Result<Value, String> {
+    state.call(
+        "submitRevision",
+        json!({ "requestId": request_id, "comment": comment }),
+    )
 }
 
 #[tauri::command]
-pub async fn complete(_request_id: String) -> Result<serde_json::Value, String> {
-    Err("complete: 脚手架占位".into())
+pub fn complete(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("complete", json!({ "requestId": request_id }))
 }
 
 #[tauri::command]
-pub async fn archive(_request_id: String) -> Result<serde_json::Value, String> {
-    Err("archive: 脚手架占位".into())
+pub fn archive(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("archive", json!({ "requestId": request_id }))
 }
