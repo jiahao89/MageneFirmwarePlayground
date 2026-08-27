@@ -160,6 +160,10 @@ export interface LaunchResult {
   ok: boolean;
   sessionId?: string;
   startedAt?: string;
+  /** resume 失败降级为新会话时为 true。 */
+  fallback?: boolean;
+  /** 过程说明（如降级原因），供 UI 展示。 */
+  note?: string;
   error?: BridgeErrorPayload;
 }
 

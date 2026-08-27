@@ -4,7 +4,9 @@ import { hashString } from './util';
 import { assertTransition } from './state-machine';
 import { buildTaskCard } from './task-card';
 import { buildDiagnosticWorkPackage } from './work-package-store';
+import { MockSessionDriver } from './session-driver';
 import type { WorkPackageStore } from './work-package-store';
+import type { SessionDriver } from './session-driver';
 import type {
   MfpBridge,
   RawInput,
@@ -31,6 +33,8 @@ export interface WorkPackageBridgeDeps {
   store: WorkPackageStore;
   recognizeRaw: (raw: RawInput) => Promise<RecognitionResult>;
   preflightRaw: (requestId: string) => Promise<PreflightResult>;
+  /** 会话驱动；默认内存 mock（浏览器与 UI 测试沿用既有行为）。 */
+  sessions?: SessionDriver;
 }
 
 export class WorkPackageBridge implements MfpBridge {
@@ -38,6 +42,7 @@ export class WorkPackageBridge implements MfpBridge {
   protected readonly store: WorkPackageStore;
   protected readonly recognizeRaw: (raw: RawInput) => Promise<RecognitionResult>;
   protected readonly preflightRaw: (requestId: string) => Promise<PreflightResult>;
+  protected readonly sessions: SessionDriver;
   protected readonly runGuard = new RunGuard();
   protected seq = 0;
 
@@ -46,6 +51,7 @@ export class WorkPackageBridge implements MfpBridge {
     this.store = deps.store;
     this.recognizeRaw = deps.recognizeRaw;
     this.preflightRaw = deps.preflightRaw;
+    this.sessions = deps.sessions ?? new MockSessionDriver();
   }
 
   async saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
@@ -126,15 +132,21 @@ export class WorkPackageBridge implements MfpBridge {
     this.runGuard.acquire(requestId, this.now);
     try {
       assertTransition(wp.status, 'processing', 'launch（PM 启动）');
-      const sessionId = `SESSION-${hashString(requestId)}`;
+      const outcome = await this.sessions.startNew(wp);
       const startedAt = this.now();
       wp.status = 'processing';
-      wp.session = { sessionId, processState: 'running', startedAt };
+      wp.session = {
+        sessionId: outcome.sessionId,
+        cliVersion: outcome.cliVersion,
+        processState: 'running',
+        startedAt,
+        lastError: outcome.lastError,
+      };
       this.seq += 1;
-      wp.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId, startedAt, state: 'running' });
+      wp.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
       wp.updatedAt = this.now();
       await this.store.save(wp);
-      return { ok: true, sessionId, startedAt };
+      return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
     } catch (e) {
       this.runGuard.release(requestId);
       throw e;
@@ -142,12 +154,38 @@ export class WorkPackageBridge implements MfpBridge {
   }
 
   async resume(requestId: string): Promise<LaunchResult> {
-    // 真实会话恢复见 Issue #3；mock 语义：已在运行则返回现有会话，否则按启动处理。
     const wp = await this.loadRequired(requestId);
-    if (wp.session.processState === 'running' && wp.session.sessionId) {
+    // 同一应用会话内已在运行 → 直接返回既有会话（防止重复开终端）。
+    // 应用重启后内存守卫为空，resume 会真正走适配器恢复已保存会话。
+    if (this.runGuard.isRunning(requestId) && wp.session.sessionId) {
       return { ok: true, sessionId: wp.session.sessionId, startedAt: wp.session.startedAt };
     }
-    return this.launch(requestId);
+    this.runGuard.acquire(requestId, this.now);
+    try {
+      // 会话恢复是会话层操作：仅当需求尚在「待启动」时才迁移到「处理中」；
+      // 其余状态（如处理中 / 待回答）保持不变，只更新会话元数据。
+      if (wp.status === 'pending_launch') {
+        assertTransition(wp.status, 'processing', 'resume（PM 恢复会话）');
+        wp.status = 'processing';
+      }
+      const outcome = await this.sessions.resume(wp);
+      const startedAt = this.now();
+      wp.session = {
+        sessionId: outcome.sessionId,
+        cliVersion: outcome.cliVersion,
+        processState: 'running',
+        startedAt,
+        lastError: outcome.lastError,
+      };
+      this.seq += 1;
+      wp.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
+      wp.updatedAt = this.now();
+      await this.store.save(wp);
+      return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
+    } catch (e) {
+      this.runGuard.release(requestId);
+      throw e;
+    }
   }
 
   async listWorkPackages(): Promise<WorkPackage[]> {

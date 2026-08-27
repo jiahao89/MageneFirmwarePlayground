@@ -5,6 +5,17 @@ import type { WorkPackage } from './types';
 // 文件实现见 file-work-package-store.ts（node-only）。
 // ============================================================================
 
+/** 运行时目录布局（相对 MFP 根目录；.mfp/ 已 gitignore）。 */
+export const WORK_DIR = '.mfp/work';
+
+export function workPackageFileName(requestId: string): string {
+  return `${WORK_DIR}/${requestId}.json`;
+}
+
+export function startupFileName(requestId: string): string {
+  return `${WORK_DIR}/${requestId}.startup.txt`;
+}
+
 export type StoreLoadResult =
   | { kind: 'ok'; workPackage: WorkPackage }
   | { kind: 'missing' }
