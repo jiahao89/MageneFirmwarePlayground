@@ -28,14 +28,18 @@ import {
   History,
   ArrowLeft,
   Terminal,
+  XCircle,
+  Zap,
+  Check,
 } from 'lucide-react';
-import { getBridge } from './bridge-adapter';
+import { getBridge, FrontendMockBridge, type MockScenario } from './bridge-adapter';
 import type {
-  RecognitionResult,
   WorkPackage,
+  RecognitionResult,
   PreflightResult,
   RequestStatus,
 } from '../bridge/types';
+import type { BridgeErrorPayload } from '../bridge/errors';
 import './app.css';
 
 const bridge = getBridge();
@@ -54,20 +58,28 @@ export function App() {
   // 原始需求录入状态 (Issue #4)
   const [rawText, setRawText] = useState('');
   const [sourceDesc, setSourceDesc] = useState('客户微信群反馈');
-  const [demoType, setDemoType] = useState<'cadence' | 'radar' | 'bug'>('cadence');
-  // Issue #2 契约：saveRawInput 返回工作包（原文保存在 originalInput 字段）
   const [currentRaw, setCurrentRaw] = useState<WorkPackage | null>(null);
   const [recognition, setRecognition] = useState<RecognitionResult | null>(null);
   const [intakeLoading, setIntakeLoading] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
 
-  // 详情页状态 (Issue #5)
+  // 详情页状态 (Issue #5 & Issue #3 联调)
   const [activeDetailTab, setActiveDetailTab] = useState<DetailTab>('overview');
   const [activeWorkPackage, setActiveWorkPackage] = useState<WorkPackage | null>(null);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [isPreflightChecking, setIsPreflightChecking] = useState(false);
   const [isStartingSession, setIsStartingSession] = useState(false);
-  const [sessionFeedback, setSessionFeedback] = useState<string | null>(null);
+  const [sessionFeedback, setSessionFeedback] = useState<{
+    type: 'success' | 'warning' | 'error';
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+  const [lastLaunchError, setLastLaunchError] = useState<BridgeErrorPayload | null>(null);
+  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
+
+  // Mock 场景模拟器状态 (联调辅助)
+  const [currentScenario, setCurrentScenario] = useState<MockScenario>('normal');
 
   // 澄清问答与修改意见
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -75,19 +87,64 @@ export function App() {
   const [isSubmittingRevision, setIsSubmittingRevision] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
 
-  // 初始化预填示例
+  // 初始化加载
   useEffect(() => {
-    // 首次若无数据，可自动通过 mock 预热一条
-    refreshWorkPackages();
+    loadWorkPackageList();
   }, []);
 
-  const refreshWorkPackages = async () => {
+  // Agent 启动后定时轮询工作包，展示 Agent 写回的问题、状态、日志和 PRD
+  useEffect(() => {
+    if (!activeWorkPackage || currentPage !== 'detail') return;
+
+    const timer = setInterval(async () => {
+      try {
+        const wp = await bridge.readWorkPackage(activeWorkPackage.requestId);
+        setActiveWorkPackage(wp);
+        setWorkPackages((prev) =>
+          prev.map((w) => (w.requestId === wp.requestId ? wp : w))
+        );
+      } catch {}
+    }, 3000);
+
+    return () => clearInterval(timer);
+  }, [activeWorkPackage?.requestId, currentPage]);
+
+  const loadWorkPackageList = async () => {
+    try {
+      const list = await bridge.listWorkPackages();
+      setWorkPackages(list);
+    } catch {
+      // 兼容环境
+    }
+  };
+
+  const refreshActiveWorkPackage = async () => {
     if (activeWorkPackage) {
       try {
         const wp = await bridge.readWorkPackage(activeWorkPackage.requestId);
         setActiveWorkPackage(wp);
+        setWorkPackages((prev) =>
+          prev.map((w) => (w.requestId === wp.requestId ? wp : w))
+        );
       } catch {}
     }
+  };
+
+  // 切换 Mock 模拟场景
+  const handleScenarioChange = (scenario: MockScenario) => {
+    setCurrentScenario(scenario);
+    if (bridge instanceof FrontendMockBridge) {
+      bridge.setScenario(scenario);
+    }
+    if (activeWorkPackage) {
+      runPreflight(activeWorkPackage.requestId);
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedCmd(label);
+    setTimeout(() => setCopiedCmd(null), 2000);
   };
 
   // ==========================================
@@ -98,7 +155,6 @@ export function App() {
   const isTooShort = charCount === 0;
 
   const handleFillDemo = (type: 'cadence' | 'radar' | 'bug') => {
-    setDemoType(type);
     if (type === 'cadence') {
       setRawText(
         '车友在俱乐部骑行反馈：用迈金 C706 连踏频传感器，快没电的时候完全不知道，骑到一半突然踏频归零了。希望能像心率带那样给个低电量弹窗，但千万别一直响蜂鸣器或者把导航地图全挡住，3秒自动消失就行。'
@@ -123,12 +179,12 @@ export function App() {
     setIntakeLoading(true);
 
     try {
-      // 1. 保存原文 (不丢失) —— 返回工作包，原文在 originalInput 字段
-      const raw = await bridge.saveRawInput({ text: rawText, sourceDescription: sourceDesc });
-      setCurrentRaw(raw);
+      // 1. 保存原文 (落盘存入待识别工作包，防丢)
+      const wp = await bridge.saveRawInput({ text: rawText, sourceDescription: sourceDesc });
+      setCurrentRaw(wp);
 
-      // 2. 调用非交互识别 (Claude Code -p Mock)
-      const res = await bridge.recognize(raw.requestId);
+      // 2. 调用非交互结构化识别
+      const res = await bridge.recognize(wp.requestId);
       setRecognition(res);
     } catch (err: any) {
       setIntakeError(err?.message || '识别处理失败，原文已安全暂存');
@@ -155,15 +211,6 @@ export function App() {
           },
         ];
       }
-      // 演示模拟（仅内存 mock 生效）：补齐 Issue #2 状态机中由 Agent 写回触发的
-      // 状态迁移；真实流程中这些迁移由 Claude Code 写回工作包文件（Issue #3）。
-      if (demoType === 'cadence') {
-        wp.prdPath = `output/${wp.requestId}/02-PRD.md`;
-        wp.prdVersion = 1;
-        wp.status = 'pending_review';
-      } else {
-        wp.status = 'pending_answer';
-      }
       setWorkPackages((prev) => [wp, ...prev.filter((p) => p.requestId !== wp.requestId)]);
       setActiveWorkPackage(wp);
       setCurrentPage('detail');
@@ -184,19 +231,20 @@ export function App() {
   };
 
   // ==========================================
-  // Issue #5: 工作包详情、Preflight、问答与 PRD
+  // Issue #5 & Issue #3: 工作包详情与 Agent 启动/恢复
   // ==========================================
   const loadDetail = async (reqId: string) => {
     try {
       const wp = await bridge.readWorkPackage(reqId);
       setActiveWorkPackage(wp);
       setCurrentPage('detail');
+      setLastLaunchError(null);
+      setSessionFeedback(null);
       runPreflight(reqId);
       if (wp.status === 'pending_answer') setActiveDetailTab('clarification');
       else if (wp.status === 'pending_review' || wp.status === 'completed') setActiveDetailTab('prd');
       else setActiveDetailTab('overview');
     } catch {
-      // 从本地 workPackages 列表中获取
       const found = workPackages.find((w) => w.requestId === reqId);
       if (found) {
         setActiveWorkPackage(found);
@@ -215,25 +263,88 @@ export function App() {
     }
   };
 
+  // 1. 启动新会话 (Launch)
   const handleStartSession = async () => {
     if (!activeWorkPackage) return;
     setIsStartingSession(true);
     setSessionFeedback(null);
+    setLastLaunchError(null);
+
     try {
       const res = await bridge.launch(activeWorkPackage.requestId);
-      setSessionFeedback(`已成功在外部终端启动 Claude Code 会话 [${res.sessionId}]`);
-      const updated = await bridge.readWorkPackage(activeWorkPackage.requestId);
-      setActiveWorkPackage(updated);
-      setWorkPackages((prev) =>
-        prev.map((w) => (w.requestId === updated.requestId ? updated : w))
-      );
+      setSessionFeedback({
+        type: 'success',
+        title: 'Claude Code 会话已启动',
+        message: `已成功在外部终端启动 Agent 会话 [${res.sessionId || '新会话'}]`,
+        details: res.note,
+      });
+      await refreshActiveWorkPackage();
     } catch (e: any) {
-      alert(e?.message || '启动 Claude Code 失败');
+      const payload: BridgeErrorPayload = e?.payload || {
+        code: (e?.code as any) || 'TERMINAL_LAUNCH_FAILED',
+        category: (e?.category as any) || 'io',
+        message: e?.message || String(e),
+      };
+      setLastLaunchError(payload);
+      setSessionFeedback({
+        type: 'error',
+        title: `启动失败: ${payload.code}`,
+        message: payload.message,
+      });
     } finally {
       setIsStartingSession(false);
     }
   };
 
+  // 2. 恢复既有会话 (Resume)
+  const handleResumeSession = async () => {
+    if (!activeWorkPackage) return;
+    setIsStartingSession(true);
+    setSessionFeedback(null);
+    setLastLaunchError(null);
+
+    try {
+      const res = await bridge.resume(activeWorkPackage.requestId);
+      if (res.fallback) {
+        setSessionFeedback({
+          type: 'warning',
+          title: '会话降级恢复',
+          message: res.note || '原会话文件已丢失或过期，系统已自动基于工作包重新创建新会话并唤起终端',
+        });
+      } else {
+        setSessionFeedback({
+          type: 'success',
+          title: 'Claude Code 会话已恢复',
+          message: `已连接至历史会话 [${res.sessionId || activeWorkPackage.session.sessionId || '既有会话'}]`,
+        });
+      }
+      await refreshActiveWorkPackage();
+    } catch (e: any) {
+      const payload: BridgeErrorPayload = e?.payload || {
+        code: (e?.code as any) || 'SESSION_NOT_FOUND',
+        category: (e?.category as any) || 'cli',
+        message: e?.message || String(e),
+      };
+      setLastLaunchError(payload);
+      setSessionFeedback({
+        type: 'error',
+        title: `恢复失败: ${payload.code}`,
+        message: payload.message,
+      });
+    } finally {
+      setIsStartingSession(false);
+    }
+  };
+
+  // 3. 强制创建新会话 (Force New Session)
+  const handleForceNewSession = async () => {
+    if (!activeWorkPackage) return;
+    if (window.confirm('强制创建新会话将覆盖当前已连接的会话，确定继续？')) {
+      handleStartSession();
+    }
+  };
+
+  // 澄清问答提交
   const handleAnswerQuestion = async (qId: string, autoResume = false) => {
     if (!activeWorkPackage) return;
     const ans = answers[qId] || '';
@@ -251,27 +362,32 @@ export function App() {
       setWorkPackages((prev) =>
         prev.map((w) => (w.requestId === updated.requestId ? updated : w))
       );
-      alert('回答已同步并恢复 Claude Code 会话！');
+      setSessionFeedback({
+        type: 'success',
+        title: '回答已同步',
+        message: autoResume ? '回答已保存并成功唤起 Claude Code 会话恢复！' : '回答已暂存至工作包。',
+      });
     } catch (e: any) {
       alert(e?.message || '提交回答失败');
     }
   };
 
+  // 提交修改意见
   const handleSubmitRevision = async () => {
     if (!activeWorkPackage || !revisionComment.trim()) return;
     setIsSubmittingRevision(true);
     try {
       const updated = await bridge.submitRevision(activeWorkPackage.requestId, revisionComment);
-      // 演示模拟（仅内存 mock 生效）：模拟 Agent 按意见更新 PRD 后回到待审阅；
-      // 真实流程中该迁移由 Claude Code 写回工作包文件（Issue #3）。
-      updated.status = 'pending_review';
-      updated.prdVersion = (updated.prdVersion ?? 1) + 1;
       setRevisionComment('');
       setActiveWorkPackage(updated);
       setWorkPackages((prev) =>
         prev.map((w) => (w.requestId === updated.requestId ? updated : w))
       );
-      alert('已提交修改意见至 revision.md！');
+      setSessionFeedback({
+        type: 'success',
+        title: '修改意见已记录',
+        message: '修改意见已写入 revision.md，状态已更新为「修改中」。',
+      });
     } catch (e: any) {
       alert(e?.message || '提交修改意见失败');
     } finally {
@@ -279,6 +395,7 @@ export function App() {
     }
   };
 
+  // 确认完成验收
   const handleConfirmCompletion = async () => {
     if (!activeWorkPackage) return;
     try {
@@ -288,7 +405,11 @@ export function App() {
       setWorkPackages((prev) =>
         prev.map((w) => (w.requestId === updated.requestId ? updated : w))
       );
-      alert('需求已标记为「完成」终态！');
+      setSessionFeedback({
+        type: 'success',
+        title: '需求已确认完成',
+        message: 'PRD 终稿已锁定，工作包已标记为「完成」终态。',
+      });
     } catch (e: any) {
       alert(e?.message || '确认完成失败');
     }
@@ -318,11 +439,11 @@ export function App() {
   const getNextActionText = (status: RequestStatus) => {
     switch (status) {
       case 'pending_launch':
-        return '点击「在 Claude Code 中开始」，打开 MFP 根目录启动交互会话';
+        return '点击「启动 Agent」，打开外部终端开始执行 Phase 0~4';
       case 'processing':
         return 'Claude Code 正在外部终端分析需求并撰写 PRD...';
       case 'pending_answer':
-        return '回答 Agent 提出的关键硬件与交互缺口问题';
+        return '回答 Agent 提出的关键硬件与交互缺口问题并恢复会话';
       case 'pending_review':
         return '审阅生成的 02-PRD.md 或提出修改意见';
       case 'revising':
@@ -370,6 +491,187 @@ export function App() {
 `;
   };
 
+  // 检查 Preflight 是否通过
+  const isPreflightPassed = preflight ? preflight.ok : false;
+
+  // 针对特定 Preflight 失败项渲染指导
+  const renderPreflightDiagnosis = () => {
+    if (!preflight || preflight.ok) return null;
+
+    const failedChecks = preflight.checks.filter((c) => !c.ok);
+    const hasCliError = failedChecks.some((c) => c.name === 'cli_installed' || c.name === 'cli_version');
+    const hasAuthError = failedChecks.some((c) => c.name === 'cli_auth');
+    const hasRootError = failedChecks.some((c) => c.name === 'mfp_root_exists' || c.name === 'mfp_root_writable');
+    const otherErrors = failedChecks.filter(
+      (c) =>
+        c.name !== 'cli_installed' &&
+        c.name !== 'cli_version' &&
+        c.name !== 'cli_auth' &&
+        c.name !== 'mfp_root_exists' &&
+        c.name !== 'mfp_root_writable'
+    );
+
+    return (
+      <div className="resolution-card">
+        <div className="resolution-title">
+          <AlertTriangle size={17} />
+          <span>环境检查未通过 ({failedChecks.length} 项未就绪)</span>
+        </div>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 10 }}>
+          Claude Code 启动前需要确保本地环境就绪。请参考以下建议进行修复：
+        </p>
+
+        {hasCliError && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 13, color: '#ffffff', fontWeight: 600 }}>
+              🔴 未检测到 Claude Code CLI 或无法获取版本
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              请在终端全局安装 Claude Code CLI：
+            </div>
+            <div className="code-box">
+              <code>npm install -g @anthropic-ai/claude-code</code>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ padding: '2px 8px', fontSize: 11 }}
+                onClick={() => copyToClipboard('npm install -g @anthropic-ai/claude-code', 'cli_install')}
+              >
+                {copiedCmd === 'cli_install' ? <Check size={12} /> : <Copy size={12} />}
+                {copiedCmd === 'cli_install' ? '已复制' : '复制命令'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {hasAuthError && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 13, color: '#ffffff', fontWeight: 600 }}>
+              🟡 Claude Code 未登录或凭据失效
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              请打开系统终端运行登录命令完成身份认证：
+            </div>
+            <div className="code-box">
+              <code>claude login</code>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ padding: '2px 8px', fontSize: 11 }}
+                onClick={() => copyToClipboard('claude login', 'cli_login')}
+              >
+                {copiedCmd === 'cli_login' ? <Check size={12} /> : <Copy size={12} />}
+                {copiedCmd === 'cli_login' ? '已复制' : '复制命令'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {hasRootError && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 13, color: '#ffffff', fontWeight: 600 }}>
+              🔴 MFP 项目根目录不存在或无写入权限
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              请确保工作区目录有效且当前用户具有读写权限。
+            </div>
+          </div>
+        )}
+
+        {otherErrors.map((c) => (
+          <div key={c.name} style={{ marginTop: 8, fontSize: 12.5, color: '#f87171' }}>
+            • {c.name}: {c.detail}
+          </div>
+        ))}
+
+        <div style={{ marginTop: 14, display: 'flex', gap: 10 }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={isPreflightChecking}
+            onClick={() => activeWorkPackage && runPreflight(activeWorkPackage.requestId)}
+          >
+            <RefreshCw size={12} className={isPreflightChecking ? 'animate-spin' : ''} />
+            修复后重新检查
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // 针对启动失败提供结构化错误处理与用户可理解建议
+  const renderLaunchErrorResolution = () => {
+    if (!lastLaunchError) return null;
+
+    let actionableAdvice = '请检查本地终端环境与 Claude Code 运行状态。';
+    let suggestedCmd = '';
+
+    switch (lastLaunchError.code) {
+      case 'CLI_NOT_FOUND':
+        actionableAdvice = '系统找不到 claude 命令。请先安装 Claude Code CLI 并将其添加到 PATH 环境变量中。';
+        suggestedCmd = 'npm install -g @anthropic-ai/claude-code';
+        break;
+      case 'CLI_AUTH_FAILED':
+        actionableAdvice = 'Claude Code 认证失效或 API 凭据未配置。请在终端执行登录命令。';
+        suggestedCmd = 'claude login';
+        break;
+      case 'TERMINAL_LAUNCH_FAILED':
+        actionableAdvice = '无法拉起外部终端应用（osascript / wt 异常）。您可手动复制启动指令并在终端粘贴运行。';
+        suggestedCmd = activeWorkPackage
+          ? `cd /Users/jacko/Projects/MFP-Antigravity && claude --name "MFP · ${activeWorkPackage.requestId}" "请读取 AGENTS.md 与 requests/${activeWorkPackage.requestId}/agent-task.md 并开始执行"`
+          : '';
+        break;
+      case 'CONCURRENT_RUN':
+        actionableAdvice = '该需求已有会话正在运行中，系统禁止重复开启多个终端避免冲突。';
+        break;
+      case 'SESSION_NOT_FOUND':
+        actionableAdvice = '历史会话文件未找到。建议点击「强制创建新会话」重新初始化。';
+        break;
+      default:
+        actionableAdvice = lastLaunchError.message;
+    }
+
+    return (
+      <div className="resolution-card">
+        <div className="resolution-title">
+          <XCircle size={17} />
+          <span>错误码: {lastLaunchError.code} ({lastLaunchError.category})</span>
+        </div>
+        <div style={{ fontSize: 13, color: '#fecaca', marginBottom: 8 }}>
+          {lastLaunchError.message}
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          <strong>建议处理方案：</strong> {actionableAdvice}
+        </div>
+
+        {suggestedCmd && (
+          <div className="code-box">
+            <code>{suggestedCmd}</code>
+            <button
+              className="btn btn-secondary btn-sm"
+              style={{ padding: '2px 8px', fontSize: 11 }}
+              onClick={() => copyToClipboard(suggestedCmd, 'err_fix')}
+            >
+              {copiedCmd === 'err_fix' ? <Check size={12} /> : <Copy size={12} />}
+              {copiedCmd === 'err_fix' ? '已复制' : '复制命令'}
+            </button>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          <button className="btn btn-primary btn-sm" onClick={handleStartSession}>
+            <Play size={13} />
+            重试启动
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={handleForceNewSession}>
+            <Zap size={13} />
+            创建新会话
+          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setLastLaunchError(null)}>
+            关闭提示
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="app-container">
       {/* 顶部导航栏 */}
@@ -409,9 +711,39 @@ export function App() {
           </button>
         </nav>
 
-        <div className="header-status-indicator">
-          <div className="status-dot active" />
-          <span>本地桥接 (Mock Ready)</span>
+        {/* 联调 Mock 场景模拟器快捷切换 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+            <span style={{ color: 'var(--text-subtle)' }}>模拟场景:</span>
+            <select
+              style={{
+                background: 'var(--bg-surface-raised)',
+                color: 'var(--brand-primary)',
+                border: '1px solid var(--border-strong)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '3px 8px',
+                fontSize: 11,
+                outline: 'none',
+                cursor: 'pointer',
+              }}
+              value={currentScenario}
+              onChange={(e) => handleScenarioChange(e.target.value as MockScenario)}
+            >
+              <option value="normal">🟢 检查正常通过</option>
+              <option value="cli_not_installed">🔴 CLI 未安装</option>
+              <option value="not_authenticated">🟡 未认证 / 登录失效</option>
+              <option value="root_missing">🔴 项目目录丢失</option>
+              <option value="launch_failed">🔴 终端启动失败</option>
+              <option value="resume_fallback">🟠 恢复会话降级</option>
+            </select>
+          </div>
+
+          <div className="header-status-indicator">
+            <div className={`status-dot ${activeWorkPackage?.session.processState === 'running' ? 'pulsing' : 'active'}`} />
+            <span>
+              {activeWorkPackage?.session.processState === 'running' ? 'Agent 运行中' : '本地桥接 (Mock Ready)'}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -452,7 +784,7 @@ export function App() {
                   </span>
                   {currentRaw && (
                     <span className="badge badge-outline" style={{ fontFamily: 'var(--font-mono)' }}>
-                      {currentRaw.rawInputId}
+                      {currentRaw.requestId}
                     </span>
                   )}
                 </div>
@@ -809,7 +1141,7 @@ export function App() {
         )}
 
         {/* ========================================================================= */}
-        {/* Issue #5: 需求工作包详情（Preflight、问答、PRD 评审与日志）               */}
+        {/* Issue #5 & Issue #3: 需求工作包详情（Preflight、启动/恢复、问答、PRD）      */}
         {/* ========================================================================= */}
         {currentPage === 'detail' && activeWorkPackage && (
           <div className="work-package-detail">
@@ -828,12 +1160,11 @@ export function App() {
                   className="btn btn-secondary btn-sm"
                   onClick={() => {
                     const cmd = `cd /Users/jacko/Projects/MFP-Antigravity && claude --name "MFP · ${activeWorkPackage.requestId}" "请读取 AGENTS.md 与 requests/${activeWorkPackage.requestId}/agent-task.md 并开始执行"`;
-                    navigator.clipboard.writeText(cmd);
-                    alert('已复制启动指令到剪贴板！');
+                    copyToClipboard(cmd, 'cmd_fallback');
                   }}
                 >
-                  <Copy size={13} />
-                  复制启动指令 (Fallback)
+                  {copiedCmd === 'cmd_fallback' ? <Check size={13} /> : <Copy size={13} />}
+                  {copiedCmd === 'cmd_fallback' ? '已复制启动指令' : '复制启动指令 (Fallback)'}
                 </button>
               </div>
             </div>
@@ -886,7 +1217,7 @@ export function App() {
                 onClick={() => setActiveDetailTab('overview')}
               >
                 <Layers size={15} />
-                工作包概览 & Preflight 检查
+                启动 Agent & Preflight 检查
               </button>
               <button
                 className={`nav-tab-btn ${activeDetailTab === 'clarification' ? 'active' : ''}`}
@@ -916,110 +1247,240 @@ export function App() {
               </button>
             </div>
 
-            {/* Tab 1: 概览与 Preflight */}
+            {/* Tab 1: 启动 Agent & Preflight 检查 */}
             {activeDetailTab === 'overview' && (
               <div>
+                {/* 会话反馈提示 */}
                 {sessionFeedback && (
-                  <div className="alert-box alert-info" style={{ marginBottom: 16 }}>
-                    <CheckCircle2 size={18} color="var(--brand-primary)" />
-                    <div>{sessionFeedback}</div>
+                  <div className={`alert-box alert-${sessionFeedback.type === 'error' ? 'danger' : sessionFeedback.type === 'warning' ? 'warning' : 'info'}`}>
+                    {sessionFeedback.type === 'error' ? <XCircle size={18} /> : sessionFeedback.type === 'warning' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} color="var(--brand-primary)" />}
+                    <div>
+                      <strong>{sessionFeedback.title}</strong>
+                      <div style={{ marginTop: 2 }}>{sessionFeedback.message}</div>
+                      {sessionFeedback.details && (
+                        <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{sessionFeedback.details}</div>
+                      )}
+                    </div>
                   </div>
                 )}
 
+                {/* Preflight 失败诊断与建议 */}
+                {renderPreflightDiagnosis()}
+
+                {/* 启动失败结构化建议 */}
+                {renderLaunchErrorResolution()}
+
                 <div className="grid-2col">
+                  {/* 左侧：启动控制与 Preflight 检查 */}
                   <div className="card">
                     <div className="card-header">
                       <span className="card-title">
                         <ShieldCheck size={18} color="var(--brand-primary)" />
                         Claude Code 启动前环境检查
                       </span>
-                      <button
-                        className="btn btn-secondary btn-sm"
-                        disabled={isPreflightChecking}
-                        onClick={() => runPreflight(activeWorkPackage.requestId)}
-                      >
-                        <RefreshCw size={12} className={isPreflightChecking ? 'animate-spin' : ''} />
-                        重新检查
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span className={`badge ${isPreflightPassed ? 'badge-done' : 'badge-error'}`}>
+                          {isPreflightPassed ? '检查全部通过' : '存在未通过项'}
+                        </span>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          disabled={isPreflightChecking}
+                          onClick={() => runPreflight(activeWorkPackage.requestId)}
+                        >
+                          <RefreshCw size={12} className={isPreflightChecking ? 'animate-spin' : ''} />
+                          重新检查
+                        </button>
+                      </div>
                     </div>
 
+                    {/* Preflight Checklist 项 */}
                     {preflight ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                        {preflight.checks.map((c, idx) => (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {preflight.checks.map((c) => (
                           <div
-                            key={idx}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              padding: '8px 12px',
-                              background: 'var(--bg-base)',
-                              borderRadius: 'var(--radius-sm)',
-                              border: '1px solid var(--border-subtle)',
-                              fontSize: 12.5,
-                            }}
+                            key={c.name}
+                            className={`preflight-item ${c.ok ? 'pass' : 'fail'}`}
                           >
-                            <span style={{ color: 'var(--text-main)' }}>{c.name}</span>
-                            <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: c.ok ? '#4ade80' : '#f87171' }}>
-                              {c.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
-                              {c.detail || (c.ok ? '检查通过' : '检查未通过')}
-                            </span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                                {c.name === 'mfp_root_exists' && '1. MFP 项目目录存在性'}
+                                {c.name === 'mfp_root_writable' && '2. 工作区写权限'}
+                                {c.name === 'cli_installed' && '3. Claude Code CLI 安装'}
+                                {c.name === 'cli_version' && '4. Claude Code 版本'}
+                                {c.name === 'cli_auth' && '5. Claude Code 认证探测'}
+                                {c.name === 'rules_entrypoints' && '6. 规则与事实源入口 (AGENTS/BENCHMARK)'}
+                                {c.name === 'task_card_readable' && '7. 任务卡可读性 (agent-task.md)'}
+                                {c.name === 'output_writable' && '8. 输出目录可写性 (output/)'}
+                              </span>
+                              <span style={{ fontSize: 11.5, color: c.ok ? 'var(--text-muted)' : '#f87171' }}>
+                                {c.detail}
+                              </span>
+                            </div>
+                            <div>
+                              {c.ok ? (
+                                <span style={{ color: '#4ade80', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                                  <CheckCircle2 size={15} /> 通过
+                                </span>
+                              ) : (
+                                <span style={{ color: '#f87171', display: 'flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+                                  <AlertTriangle size={15} /> 失败
+                                </span>
+                              )}
+                            </div>
                           </div>
                         ))}
                       </div>
                     ) : (
-                      <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>正在检查环境...</div>
+                      <div style={{ color: 'var(--text-muted)', fontSize: 13, padding: '20px 0', textAlign: 'center' }}>
+                        <Loader2 size={20} className="animate-spin" style={{ margin: '0 auto 8px' }} />
+                        正在执行启动前环境预检...
+                      </div>
                     )}
 
+                    {/* 启动与会话控制按钮组 */}
                     <div style={{ marginTop: 20, borderTop: '1px solid var(--border-subtle)', paddingTop: 16 }}>
-                      <button
-                        className="btn btn-primary"
-                        style={{ width: '100%', padding: '12px 18px', fontSize: 14 }}
-                        disabled={isStartingSession || activeWorkPackage.session.processState === 'running'}
-                        onClick={handleStartSession}
-                      >
-                        <Play size={16} />
-                        {activeWorkPackage.session.processState === 'running'
-                          ? 'Claude Code 正在终端运行中...'
-                          : '打开 MFP 根目录并在外部终端启动 Claude Code'}
-                      </button>
-                      <div style={{ fontSize: 11.5, color: 'var(--text-subtle)', marginTop: 8, textAlign: 'center' }}>
-                        工作目录将自动设置为 <code>/Users/jacko/Projects/MFP-Antigravity</code>
-                      </div>
+                      {/* 未启动或初次启动 */}
+                      {activeWorkPackage.session.processState !== 'running' ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <button
+                            className="btn btn-primary"
+                            style={{ width: '100%', padding: '12px 18px', fontSize: 14 }}
+                            disabled={isStartingSession || !isPreflightPassed}
+                            onClick={handleStartSession}
+                          >
+                            {isStartingSession ? (
+                              <>
+                                <Loader2 size={16} className="animate-spin" />
+                                正在拉起外部终端并启动 Claude Code...
+                              </>
+                            ) : (
+                              <>
+                                <Play size={16} />
+                                打开外部终端并启动 Agent
+                              </>
+                            )}
+                          </button>
+
+                          {activeWorkPackage.session.sessionId && (
+                            <button
+                              className="btn btn-secondary"
+                              style={{ width: '100%', fontSize: 13 }}
+                              disabled={isStartingSession}
+                              onClick={handleResumeSession}
+                            >
+                              <RefreshCw size={14} />
+                              恢复历史会话 [{activeWorkPackage.session.sessionId}]
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        /* 运行中状态 */
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                          <div style={{ background: 'rgba(6, 182, 212, 0.1)', border: '1px solid rgba(6, 182, 212, 0.3)', padding: 12, borderRadius: 'var(--radius-md)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                              <div className="status-dot pulsing" />
+                              <div>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: '#22d3ee' }}>
+                                  Claude Code 正在终端运行中
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                  Session ID: <code>{activeWorkPackage.session.sessionId}</code>
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              onClick={handleResumeSession}
+                              disabled={isStartingSession}
+                            >
+                              <RefreshCw size={12} />
+                              同步恢复
+                            </button>
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              style={{ flex: 1 }}
+                              onClick={handleForceNewSession}
+                            >
+                              <Zap size={13} />
+                              强制创建新会话
+                            </button>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              style={{ flex: 1 }}
+                              onClick={() => {
+                                const cmd = `cd /Users/jacko/Projects/MFP-Antigravity && claude --name "MFP · ${activeWorkPackage.requestId}" "请读取 AGENTS.md 与 requests/${activeWorkPackage.requestId}/agent-task.md 并开始执行"`;
+                                copyToClipboard(cmd, 'cmd_running');
+                              }}
+                            >
+                              {copiedCmd === 'cmd_running' ? <Check size={12} /> : <Copy size={12} />}
+                              {copiedCmd === 'cmd_running' ? '已复制指令' : '复制终端指令'}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {!isPreflightPassed && (
+                        <div style={{ fontSize: 11.5, color: '#f87171', marginTop: 8, textAlign: 'center' }}>
+                          ⚠️ 环境预检存在未通过项，请先参考上方建议完成修复后再启动
+                        </div>
+                      )}
                     </div>
                   </div>
 
+                  {/* 右侧：会话元数据与任务卡契约 */}
                   <div className="card">
                     <div className="card-header">
                       <span className="card-title">
                         <Terminal size={18} color="var(--brand-primary)" />
-                        会话元数据 (session.json)
+                        会话元数据与任务卡契约
                       </span>
                     </div>
 
                     <div style={{ fontSize: 13, lineHeight: 1.8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-subtle)', paddingBottom: 6 }}>
                         <span style={{ color: 'var(--text-muted)' }}>Session ID:</span>
-                        <code style={{ color: 'var(--brand-primary)' }}>{activeWorkPackage.session.sessionId || '未启动'}</code>
+                        <code style={{ color: 'var(--brand-primary)' }}>{activeWorkPackage.session.sessionId || '未初始化'}</code>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-subtle)', padding: '6px 0' }}>
                         <span style={{ color: 'var(--text-muted)' }}>运行状态:</span>
-                        <span className="badge badge-running">{activeWorkPackage.session.processState || 'idle'}</span>
+                        <span className={`badge ${activeWorkPackage.session.processState === 'running' ? 'badge-running' : 'badge-outline'}`}>
+                          {activeWorkPackage.session.processState || 'idle'}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border-subtle)', padding: '6px 0' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>CLI 版本:</span>
+                        <span>{activeWorkPackage.session.cliVersion || 'claude 2.1.229'}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6 }}>
-                        <span style={{ color: 'var(--text-muted)' }}>最近启动:</span>
+                        <span style={{ color: 'var(--text-muted)' }}>启动时间:</span>
                         <span>{activeWorkPackage.session.startedAt?.slice(0, 19).replace('T', ' ') || '—'}</span>
                       </div>
                     </div>
 
+                    {/* 任务卡简要预览 */}
+                    <div style={{ marginTop: 20, background: 'var(--bg-base)', padding: 12, borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--brand-primary)', marginBottom: 4 }}>
+                        📄 任务卡 (agent-task.md) 核心约定
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                        <div>• 目标：产出符合事实红线与人群模型的 02-PRD.md</div>
+                        <div>• 工作目录：<code>/Users/jacko/Projects/MFP-Antigravity</code></div>
+                        <div>• 规则文件：只读引用 <code>AGENTS.md</code> 与 <code>BENCHMARK.md</code></div>
+                        <div>• 暂停条件：遇到阻塞性硬件/协议未决时写 <code>questions.json</code></div>
+                      </div>
+                    </div>
+
                     {activeWorkPackage.recognition?.evidence && (
-                      <div style={{ marginTop: 20 }}>
+                      <div style={{ marginTop: 16 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <BookOpen size={14} /> 绑定的事实基准与规则
+                          <BookOpen size={14} /> 事实源基准依据
                         </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                           {activeWorkPackage.recognition.evidence.map((ev, idx) => (
-                            <div key={idx} style={{ fontSize: 12, color: 'var(--text-subtle)', background: 'var(--bg-base)', padding: '6px 10px', borderRadius: 'var(--radius-sm)' }}>
+                            <div key={idx} style={{ fontSize: 11.5, color: 'var(--text-subtle)', background: 'var(--bg-base)', padding: '5px 8px', borderRadius: 'var(--radius-sm)' }}>
                               <code>{ev.ref}</code> {ev.note ? `— ${ev.note}` : ''}
                             </div>
                           ))}
@@ -1338,7 +1799,9 @@ export function App() {
                           {log.startedAt.slice(0, 19).replace('T', ' ')}
                         </div>
                         <div style={{ minWidth: 90 }}>
-                          <span className="badge badge-running">{log.state}</span>
+                          <span className={`badge ${log.state === 'running' ? 'badge-running' : log.state === 'succeeded' ? 'badge-done' : 'badge-error'}`}>
+                            {log.state}
+                          </span>
                         </div>
                         <div style={{ flex: 1, color: 'var(--text-main)' }}>
                           Run ID: <code>{log.runId}</code> &mdash; Session: <code>{log.sessionId}</code>
