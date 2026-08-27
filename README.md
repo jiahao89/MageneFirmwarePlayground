@@ -15,6 +15,7 @@
 | `scripts/` | `md2lark.py`（PRD Markdown → 飞书 XML 转换器） |
 | `output/{需求名}/` | 产出区：`00-竞品调研` → `02-PRD` → `03-评审意见` → `04-原型输入` → `05-原型验收` |
 | `design/` | 方案文档（v1/v2/v3 演进） |
+| `app/` | MFP 本地工作台应用：Tauri 壳 + React UI + 本地桥接契约（Issue #7 起，见 `app/README.md`） |
 
 ## 用法
 
