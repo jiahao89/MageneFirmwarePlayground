@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { App } from '../src/web/App';
+import { getBridge, FrontendMockBridge } from '../src/web/bridge-adapter';
 
-describe('MFP UI Components (Issue #4 & Issue #5)', () => {
+describe('MFP UI Integration Tests (Issue #4, #5 & Agent Launch Flow)', () => {
   beforeEach(() => {
     vi.stubGlobal('alert', vi.fn());
     vi.stubGlobal('confirm', vi.fn(() => true));
@@ -11,6 +12,10 @@ describe('MFP UI Components (Issue #4 & Issue #5)', () => {
         writeText: vi.fn().mockImplementation(() => Promise.resolve()),
       },
     });
+    const bridge = getBridge();
+    if (bridge instanceof FrontendMockBridge) {
+      bridge.setScenario('normal');
+    }
   });
 
   it('renders header, navigation tabs and switches between pool and intake', async () => {
@@ -62,13 +67,77 @@ describe('MFP UI Components (Issue #4 & Issue #5)', () => {
     await waitFor(
       () => {
         expect(screen.getByText(/Claude Code 启动前环境检查/i)).toBeDefined();
-        expect(screen.getByText(/工作包概览 & Preflight 检查/i)).toBeDefined();
+        expect(screen.getByText(/启动 Agent & Preflight 检查/i)).toBeDefined();
       },
       { timeout: 3000 }
     );
   });
 
-  it('Issue #5: displays clarification questions and allows submitting answer', async () => {
+  it('Issue #3 & #5: displays preflight checks and launches Agent session', async () => {
+    render(<App />);
+
+    // Switch to intake and register a requirement
+    const intakeTabs = screen.getAllByRole('button', { name: /原始需求识别/i });
+    fireEvent.click(intakeTabs[0]);
+
+    const demoBtn = await screen.findByRole('button', { name: /L508 雷达防眩目调光/i });
+    fireEvent.click(demoBtn);
+
+    const startBtn = screen.getByRole('button', { name: /保存原文并开始 AI 识别/i });
+    fireEvent.click(startBtn);
+
+    const registerBtn = await screen.findByRole('button', { name: /确认登记为正式需求/i });
+    fireEvent.click(registerBtn);
+
+    // Preflight checks should be displayed
+    expect(await screen.findByText(/1. MFP 项目目录存在性/i)).toBeDefined();
+    expect(screen.getByText(/3. Claude Code CLI 安装/i)).toBeDefined();
+    expect(screen.getByText(/5. Claude Code 认证探测/i)).toBeDefined();
+
+    // Launch Agent
+    const launchBtn = await screen.findByRole('button', { name: /打开外部终端并启动 Agent/i });
+    fireEvent.click(launchBtn);
+
+    // Wait for running state
+    await waitFor(() => {
+      expect(screen.getByText(/Claude Code 正在终端运行中/i)).toBeDefined();
+    });
+  });
+
+  it('handles and displays actionable diagnosis when preflight fails (CLI not installed)', async () => {
+    render(<App />);
+
+    // Go to intake and register in normal scenario
+    const intakeTabs = screen.getAllByRole('button', { name: /原始需求识别/i });
+    fireEvent.click(intakeTabs[0]);
+
+    const demoBtn = await screen.findByRole('button', { name: /C706 踏频低电量提示/i });
+    fireEvent.click(demoBtn);
+
+    const startBtn = screen.getByRole('button', { name: /保存原文并开始 AI 识别/i });
+    fireEvent.click(startBtn);
+
+    const registerBtn = await screen.findByRole('button', { name: /确认登记为正式需求/i });
+    fireEvent.click(registerBtn);
+
+    // Now switch scenario to cli_not_installed via select or bridge
+    const bridge = getBridge();
+    if (bridge instanceof FrontendMockBridge) {
+      bridge.setScenario('cli_not_installed');
+    }
+
+    // Trigger re-check
+    const recheckBtn = await screen.findByRole('button', { name: /重新检查/i });
+    fireEvent.click(recheckBtn);
+
+    // Should display diagnosis with copy command
+    await waitFor(() => {
+      expect(screen.getByText(/未检测到 Claude Code CLI 或无法获取版本/i)).toBeDefined();
+      expect(screen.getByText(/npm install -g @anthropic-ai\/claude-code/i)).toBeDefined();
+    });
+  });
+
+  it('displays clarification questions and allows submitting answer with auto resume', async () => {
     render(<App />);
 
     // Switch to intake and register a requirement
@@ -103,7 +172,7 @@ describe('MFP UI Components (Issue #4 & Issue #5)', () => {
     }
   });
 
-  it('Issue #5: renders PRD Markdown, submits revision comments and triggers completion modal', async () => {
+  it('renders PRD Markdown, submits revision comments and triggers completion modal', async () => {
     render(<App />);
 
     // Register a requirement
