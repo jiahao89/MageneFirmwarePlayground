@@ -18,6 +18,8 @@ export type ErrorCategory =
 export type BridgeErrorCode =
   | 'INVALID_PATH'
   | 'CONCURRENT_RUN'
+  | 'CONCURRENT_WRITE'
+  | 'INVALID_TRANSITION'
   | 'MALFORMED_STATE'
   | 'CLI_NOT_FOUND'
   | 'CLI_AUTH_FAILED'
@@ -39,6 +41,8 @@ export interface BridgeErrorPayload {
 const CODE_CATEGORY: Record<BridgeErrorCode, ErrorCategory> = {
   INVALID_PATH: 'path',
   CONCURRENT_RUN: 'concurrency',
+  CONCURRENT_WRITE: 'concurrency',
+  INVALID_TRANSITION: 'state',
   MALFORMED_STATE: 'state',
   CLI_NOT_FOUND: 'cli',
   CLI_AUTH_FAILED: 'cli',

@@ -1,7 +1,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { InMemoryBridge } from './in-memory-bridge';
+import { WorkPackageBridge } from './work-package-bridge';
+import { FileWorkPackageStore } from './file-work-package-store';
 import { PathGuard } from './path-guard';
 import { runProcess } from './process-runner';
 import { parseRecognitionText } from './validate';
@@ -9,8 +10,9 @@ import { BridgeError } from './errors';
 import type { RawInput, RecognitionResult, PreflightResult, PreflightCheck } from './types';
 
 // ============================================================================
-// Node 侧本地桥：用确定性 fake CLI 子进程跑通契约测试缝隙（Issue #1 的
-// 「highest test seam」）。真实 claude CLI 适配由 Issue #3 替换 `cli`。
+// Node 侧本地桥：文件工作包存储 + 确定性 fake CLI 子进程。
+// 文件为事实源，重启后仍可恢复（Issue #2 验收）。
+// 真实 claude CLI 适配由 Issue #3 替换 `cli`。
 // ============================================================================
 
 export interface LocalBridgeOptions {
@@ -20,7 +22,7 @@ export interface LocalBridgeOptions {
   cli?: { command: string; args: string[] };
 }
 
-export class LocalBridge extends InMemoryBridge {
+export class LocalBridge extends WorkPackageBridge {
   readonly guard: PathGuard;
 
   constructor(opts: LocalBridgeOptions) {
@@ -29,6 +31,7 @@ export class LocalBridge extends InMemoryBridge {
     const cli = opts.cli ?? defaultFakeCli();
     super({
       now,
+      store: new FileWorkPackageStore(opts.root),
       recognizeRaw: (raw: RawInput) => recognizeViaCli(cli, guard.root, raw),
       preflightRaw: async (requestId: string) => preflightFs(guard, requestId),
     });

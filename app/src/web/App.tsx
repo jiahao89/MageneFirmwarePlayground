@@ -31,7 +31,6 @@ import {
 } from 'lucide-react';
 import { getBridge } from './bridge-adapter';
 import type {
-  RawInput,
   RecognitionResult,
   WorkPackage,
   PreflightResult,
@@ -55,7 +54,9 @@ export function App() {
   // 原始需求录入状态 (Issue #4)
   const [rawText, setRawText] = useState('');
   const [sourceDesc, setSourceDesc] = useState('客户微信群反馈');
-  const [currentRaw, setCurrentRaw] = useState<RawInput | null>(null);
+  const [demoType, setDemoType] = useState<'cadence' | 'radar' | 'bug'>('cadence');
+  // Issue #2 契约：saveRawInput 返回工作包（原文保存在 originalInput 字段）
+  const [currentRaw, setCurrentRaw] = useState<WorkPackage | null>(null);
   const [recognition, setRecognition] = useState<RecognitionResult | null>(null);
   const [intakeLoading, setIntakeLoading] = useState(false);
   const [intakeError, setIntakeError] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export function App() {
   const isTooShort = charCount === 0;
 
   const handleFillDemo = (type: 'cadence' | 'radar' | 'bug') => {
+    setDemoType(type);
     if (type === 'cadence') {
       setRawText(
         '车友在俱乐部骑行反馈：用迈金 C706 连踏频传感器，快没电的时候完全不知道，骑到一半突然踏频归零了。希望能像心率带那样给个低电量弹窗，但千万别一直响蜂鸣器或者把导航地图全挡住，3秒自动消失就行。'
@@ -121,12 +123,12 @@ export function App() {
     setIntakeLoading(true);
 
     try {
-      // 1. 保存原文 (不丢失)
+      // 1. 保存原文 (不丢失) —— 返回工作包，原文在 originalInput 字段
       const raw = await bridge.saveRawInput({ text: rawText, sourceDescription: sourceDesc });
       setCurrentRaw(raw);
 
       // 2. 调用非交互识别 (Claude Code -p Mock)
-      const res = await bridge.recognize(raw.rawInputId);
+      const res = await bridge.recognize(raw.requestId);
       setRecognition(res);
     } catch (err: any) {
       setIntakeError(err?.message || '识别处理失败，原文已安全暂存');
@@ -139,7 +141,7 @@ export function App() {
     if (!currentRaw) return;
     setIntakeLoading(true);
     try {
-      const wp = await bridge.register(currentRaw.rawInputId);
+      const wp = await bridge.register(currentRaw.requestId);
       // 自动注入演示问题供测试澄清
       if (wp.questions.length === 0) {
         wp.questions = [
@@ -152,6 +154,15 @@ export function App() {
             text: '踏频传感器单次骑行低电量广播的抑制周期是多久？建议为 15 分钟或单次骑行最多 2 次。',
           },
         ];
+      }
+      // 演示模拟（仅内存 mock 生效）：补齐 Issue #2 状态机中由 Agent 写回触发的
+      // 状态迁移；真实流程中这些迁移由 Claude Code 写回工作包文件（Issue #3）。
+      if (demoType === 'cadence') {
+        wp.prdPath = `output/${wp.requestId}/02-PRD.md`;
+        wp.prdVersion = 1;
+        wp.status = 'pending_review';
+      } else {
+        wp.status = 'pending_answer';
       }
       setWorkPackages((prev) => [wp, ...prev.filter((p) => p.requestId !== wp.requestId)]);
       setActiveWorkPackage(wp);
@@ -251,6 +262,10 @@ export function App() {
     setIsSubmittingRevision(true);
     try {
       const updated = await bridge.submitRevision(activeWorkPackage.requestId, revisionComment);
+      // 演示模拟（仅内存 mock 生效）：模拟 Agent 按意见更新 PRD 后回到待审阅；
+      // 真实流程中该迁移由 Claude Code 写回工作包文件（Issue #3）。
+      updated.status = 'pending_review';
+      updated.prdVersion = (updated.prdVersion ?? 1) + 1;
       setRevisionComment('');
       setActiveWorkPackage(updated);
       setWorkPackages((prev) =>

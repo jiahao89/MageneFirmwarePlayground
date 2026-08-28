@@ -9,6 +9,7 @@ export type {
   RawInput,
   EvidenceReference,
   RecognitionResult,
+  TaskCard,
   ClarificationQuestion,
   RevisionComment,
   RunState,
@@ -27,5 +28,16 @@ export type { BridgeErrorPayload, BridgeErrorCode, ErrorCategory } from './error
 export { toErrorPayload } from './errors';
 
 export { REQUEST_STATUSES } from './validate';
+
+export {
+  ALLOWED_TRANSITIONS,
+  PM_AUTHORITATIVE_STATUSES,
+  AGENT_WRITABLE_STATUSES,
+  canTransition,
+  assertTransition,
+  assertAgentWritable,
+} from './state-machine';
+
+export { buildTaskCard, validateTaskCard } from './task-card';
 
 export { recognizeDeterministic, buildMockRecognition } from './mock';
