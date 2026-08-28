@@ -145,9 +145,13 @@ pub fn build_server_args(
 
 // —— 解析辅助（纯函数，可单测）——
 
-/// 在 PATH 内容中按名称查找文件。
+/// 在 PATH 内容中按名称查找文件（分隔符参数化以便跨平台单测）。
 pub fn find_in_path(path_env: &str, names: &[&str]) -> Option<PathBuf> {
-    let sep = if cfg!(windows) { ';' } else { ':' };
+    find_in_path_with_sep(path_env, names, if cfg!(windows) { ';' } else { ':' })
+}
+
+/// 显式分隔符版本：macOS 上也能测试 Windows 的 `;` 分隔行为。
+pub fn find_in_path_with_sep(path_env: &str, names: &[&str], sep: char) -> Option<PathBuf> {
     for dir in path_env.split(sep) {
         if dir.is_empty() {
             continue;
@@ -167,15 +171,20 @@ pub fn pick_first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|p| p.is_file()).cloned()
 }
 
-/// 桥接服务脚本候选路径（dev 从 app/、仓库根或 src-tauri 运行；打包后用 MFP_BRIDGE_SERVER 指定）。
+/// 桥接服务脚本候选路径（dev 从 app/、仓库根或 src-tauri 运行；打包后命中 resource_dir）。
 /// Issue #6 验收 F-1 修复：`tauri dev` 下二进制 cwd = app/src-tauri，需覆盖 `../dist-bridge`。
-pub fn server_script_candidates(cwd: &Path, exe_dir: Option<&Path>) -> Vec<PathBuf> {
+/// 跨平台发布：bundle.resources 把 dist-bridge/* 打进安装包（macOS 为
+/// .app/Contents/Resources/，Windows 为安装目录），resource_dir 候选覆盖两种布局。
+pub fn server_script_candidates(cwd: &Path, exe_dir: Option<&Path>, resource_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut v = vec![
         cwd.join("dist-bridge").join("bridge-server.cjs"),
         cwd.join("app").join("dist-bridge").join("bridge-server.cjs"),
         cwd.join("..").join("dist-bridge").join("bridge-server.cjs"),
     ];
     if let Some(d) = exe_dir {
+        v.push(d.join("dist-bridge").join("bridge-server.cjs"));
+    }
+    if let Some(d) = resource_dir {
         v.push(d.join("dist-bridge").join("bridge-server.cjs"));
     }
     v
@@ -279,7 +288,7 @@ mod tests {
     #[test]
     fn server_script_candidates_cover_dev_layouts() {
         let cwd = Path::new("/repo");
-        let candidates = server_script_candidates(cwd, Some(Path::new("/repo/app/target/release")));
+        let candidates = server_script_candidates(cwd, Some(Path::new("/repo/app/target/release")), None);
         assert!(candidates.contains(&PathBuf::from("/repo/dist-bridge/bridge-server.cjs")));
         assert!(candidates.contains(&PathBuf::from("/repo/app/dist-bridge/bridge-server.cjs")));
         assert!(candidates.contains(&PathBuf::from(
@@ -287,8 +296,34 @@ mod tests {
         )));
         // F-1：tauri dev 的 cwd 是 app/src-tauri，必须能解析到 app/dist-bridge
         let src_tauri = Path::new("/repo/app/src-tauri");
-        let from_src_tauri = server_script_candidates(src_tauri, None);
+        let from_src_tauri = server_script_candidates(src_tauri, None, None);
         assert!(from_src_tauri.contains(&PathBuf::from("/repo/app/src-tauri/../dist-bridge/bridge-server.cjs")));
+    }
+
+    #[test]
+    fn server_script_candidates_cover_packaged_layouts() {
+        // macOS 打包：.app/Contents/Resources/dist-bridge/…
+        let mac_resources = Path::new("/Applications/MFP.app/Contents/Resources");
+        let mac = server_script_candidates(Path::new("/"), None, Some(mac_resources));
+        assert!(mac.contains(&mac_resources.join("dist-bridge").join("bridge-server.cjs")));
+        // Windows 安装目录布局（反斜杠路径）
+        let win_install = Path::new(r"C:\Program Files\MFP");
+        let win = server_script_candidates(Path::new(r"C:\\"), None, Some(win_install));
+        assert!(win.contains(&win_install.join("dist-bridge").join("bridge-server.cjs")));
+    }
+
+    #[test]
+    fn find_in_path_windows_separator() {
+        // 在 macOS 上验证 Windows 的 `;` 分隔 PATH 解析（跨平台发布）
+        let dir = std::env::temp_dir().join(format!("mfp-rust-winpath-{}", std::process::id()));
+        let sub = dir.join("bin");
+        std::fs::create_dir_all(&sub).unwrap();
+        let bin = sub.join("node.exe");
+        std::fs::write(&bin, "x").unwrap();
+        let path_env = format!(r"C:\Windows\System32;{}", sub.display());
+        let found = find_in_path_with_sep(&path_env, &["node.exe", "node.cmd", "node"], ';');
+        assert_eq!(found.unwrap(), bin);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

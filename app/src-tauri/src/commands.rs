@@ -28,16 +28,28 @@ pub struct SaveRawInputRequest {
 }
 
 /// 全局状态：懒启动的桥接服务客户端（首次调用时拉起，崩溃后自动重建）。
-#[derive(Default)]
+/// resource_dir：打包后 bundle.resources 的落地目录（macOS=.app/Contents/Resources，
+/// Windows=安装目录），用于定位 dist-bridge/bridge-server.cjs。
 pub struct AppState {
     client: Mutex<Option<BridgeClient>>,
+    resource_dir: Option<PathBuf>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self { client: Mutex::new(None), resource_dir: None }
+    }
 }
 
 impl AppState {
+    pub fn new(resource_dir: Option<PathBuf>) -> Self {
+        Self { client: Mutex::new(None), resource_dir }
+    }
+
     fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let mut guard = self.client.lock().map_err(|_| "桥接客户端锁中毒".to_string())?;
         if guard.is_none() {
-            *guard = Some(spawn_bridge_client()?);
+            *guard = Some(spawn_bridge_client(self.resource_dir.as_deref())?);
         }
         let client = guard.as_mut().expect("client 刚被初始化");
         match client.call(method, params) {
@@ -52,9 +64,9 @@ impl AppState {
     }
 }
 
-fn spawn_bridge_client() -> Result<BridgeClient, String> {
+fn spawn_bridge_client(resource_dir: Option<&Path>) -> Result<BridgeClient, String> {
     let node = resolve_node()?;
-    let script = resolve_script()?;
+    let script = resolve_script(resource_dir)?;
     let cwd = std::env::current_dir().map_err(|e| format!("无法获取当前目录：{}", e))?;
     let root = resolve_root(std::env::var("MFP_ROOT").ok().as_deref(), &cwd)?;
     let adapter = std::env::var("MFP_ADAPTER").unwrap_or_else(|_| "claude".to_string());
@@ -81,7 +93,7 @@ fn resolve_node() -> Result<String, String> {
         })
 }
 
-fn resolve_script() -> Result<PathBuf, String> {
+fn resolve_script(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("MFP_BRIDGE_SERVER") {
         let pb = PathBuf::from(p);
         if pb.is_file() {
@@ -92,7 +104,7 @@ fn resolve_script() -> Result<PathBuf, String> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
-    let candidates = server_script_candidates(&cwd, exe_dir.as_deref());
+    let candidates = server_script_candidates(&cwd, exe_dir.as_deref(), resource_dir);
     pick_first_existing(&candidates).ok_or_else(|| {
         format!(
             "未找到桥接服务脚本 dist-bridge/bridge-server.cjs：请先运行 `npm run build:bridge`，或通过 MFP_BRIDGE_SERVER 环境变量指定（候选：{}）",

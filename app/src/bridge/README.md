@@ -198,6 +198,17 @@ Agent 专用逻辑的隔离边界（Issue #1「runtime adapter」）。MVP 只�
 5. **Rust 脚本候选路径**：`server_script_candidates` 增加 `../dist-bridge`，修复
    `tauri dev`（二进制 cwd=`app/src-tauri`）下找不到桥接服务的问题。
 
+## 跨平台发布（Issue #6）
+
+- **打包资源**：`tauri.conf.json` 的 `bundle.resources` 把 `dist-bridge/*` 打进安装包
+  （macOS `.app/Contents/Resources/`，Windows 安装目录）；Rust 解析器新增
+  `resource_dir` 候选（`app.path().resource_dir()` 注入），安装包零环境变量即可拉起桥接服务。
+- **跨平台纯函数测试**：`test/cross-platform.test.ts`（Windows 路径转义 / 启动计划 /
+  PATH `;` 分隔解析 / sanitization）+ Rust `find_in_path_with_sep`（Windows 分隔符）。
+- **Windows 真机一键验证**：`app/scripts/verify-windows.ps1`（node/claude/脚本定位、
+  fake RPC 冒烟、sanitization 核对、终端可用性与启动计划展示）。
+- Runbook：[`design/2026-08-28-MFP-跨平台发布验证.md`](../../../design/2026-08-28-MFP-跨平台发布验证.md)。
+
 ## 确定性 mock
 
 `mock.ts`（前端）与 `bin/fake-cli.mjs`（进程）必须输出一致；`test/mock.test.ts` 的

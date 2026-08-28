@@ -9,7 +9,13 @@ mod commands;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(commands::AppState::default())
+        .setup(|app| {
+            // 打包后的资源目录（bundle.resources 落地点），供桥接脚本定位
+            use tauri::Manager;
+            let resource_dir = app.path().resource_dir().ok();
+            app.manage(commands::AppState::new(resource_dir));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::save_raw_input,
             commands::recognize,

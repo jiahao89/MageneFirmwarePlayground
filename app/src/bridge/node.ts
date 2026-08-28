@@ -35,6 +35,7 @@ export {
   looksLikeAuthError,
   parseClaudeVersion,
   sanitizeProjectDir,
+  resolveBinaryPath,
   parseEnvelopeToRecognition,
   stripCodeFence,
 } from './claude-cli-adapter';

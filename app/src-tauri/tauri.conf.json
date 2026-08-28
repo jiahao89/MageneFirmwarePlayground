@@ -24,6 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"]
+    "icon": ["icons/icon.png"],
+    "resources": {
+      "../dist-bridge/bridge-server.cjs": "dist-bridge/bridge-server.cjs",
+      "../dist-bridge/fake-cli.mjs": "dist-bridge/fake-cli.mjs"
+    }
   }
 }

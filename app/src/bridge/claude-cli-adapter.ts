@@ -87,6 +87,32 @@ export function sanitizeProjectDir(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
+/**
+ * 在 PATH 内容中定位 CLI 可执行文件（纯函数，跨平台可测）：
+ *  - win32：`;` 分隔，候选 `<name>.exe` / `<name>.cmd` / `<name>`
+ *  - 其他：`:` 分隔，候选 `<name>`
+ */
+export function resolveBinaryPath(cliPath: string, pathEnv: string, platform: 'darwin' | 'win32'): string | undefined {
+  const isWin = platform === 'win32';
+  if (cliPath.includes('/') || cliPath.includes('\\')) {
+    return fs.existsSync(cliPath) ? cliPath : undefined;
+  }
+  const dirs = pathEnv.split(isWin ? ';' : ':').filter(Boolean);
+  const candidates = isWin ? [`${cliPath}.exe`, `${cliPath}.cmd`, cliPath] : [cliPath];
+  for (const dir of dirs) {
+    for (const name of candidates) {
+      const full = path.join(dir, name);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        return full;
+      } catch {
+        /* continue */
+      }
+    }
+  }
+  return undefined;
+}
+
 interface ClaudeResultEnvelope {
   type?: string;
   subtype?: string;
@@ -271,25 +297,7 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
 
   /** 在 PATH 中查找 claude 可执行文件；找不到返回 undefined。 */
   private findBinary(): string | undefined {
-    if (this.cliPath.includes('/') || this.cliPath.includes('\\')) {
-      return fs.existsSync(this.cliPath) ? this.cliPath : undefined;
-    }
-    const isWin = this.platform === 'win32';
-    const pathEnv = process.env.PATH ?? '';
-    const dirs = pathEnv.split(isWin ? ';' : ':').filter(Boolean);
-    const candidates = isWin ? [`${this.cliPath}.exe`, `${this.cliPath}.cmd`, this.cliPath] : [this.cliPath];
-    for (const dir of dirs) {
-      for (const name of candidates) {
-        const full = path.join(dir, name);
-        try {
-          fs.accessSync(full, fs.constants.X_OK);
-          return full;
-        } catch {
-          /* continue */
-        }
-      }
-    }
-    return undefined;
+    return resolveBinaryPath(this.cliPath, process.env.PATH ?? '', this.platform);
   }
 }
 
