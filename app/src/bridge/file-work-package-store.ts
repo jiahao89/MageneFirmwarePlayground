@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { BridgeError } from './errors';
 import { PathGuard } from './path-guard';
 import { parseWorkPackage } from './validate';
-import { buildDiagnosticWorkPackage } from './work-package-store';
+import { buildDiagnosticWorkPackage, WORK_DIR } from './work-package-store';
 import type { WorkPackageStore, StoreLoadResult } from './work-package-store';
 import type { WorkPackage } from './types';
 
@@ -14,7 +14,6 @@ import type { WorkPackage } from './types';
 //  - 读：坏 JSON / 非法状态 → malformed 诊断态，保留原文件
 // ============================================================================
 
-const WORK_DIR = '.mfp/work';
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 export class FileWorkPackageStore implements WorkPackageStore {

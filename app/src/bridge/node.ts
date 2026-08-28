@@ -15,9 +15,44 @@ export { validateRecognition, parseRecognitionText } from './validate';
 
 export { WorkPackageBridge } from './work-package-bridge';
 export type { WorkPackageBridgeDeps } from './work-package-bridge';
-export { InMemoryWorkPackageStore, buildDiagnosticWorkPackage } from './work-package-store';
+export { InMemoryWorkPackageStore, buildDiagnosticWorkPackage, WORK_DIR, workPackageFileName, startupFileName } from './work-package-store';
 export type { WorkPackageStore, StoreLoadResult } from './work-package-store';
 export { FileWorkPackageStore } from './file-work-package-store';
+export { MockSessionDriver, AdapterSessionDriver } from './session-driver';
+export type { SessionDriver, SessionStartOutcome, AdapterSessionDriverOptions } from './session-driver';
+export { buildStartupInstruction, buildFallbackStartupInstruction } from './session-instruction';
+export type {
+  RuntimeAdapter,
+  CliAvailability,
+  AuthCheck,
+  StartSessionSpec,
+  StartSessionResult,
+  StartSessionMode,
+} from './runtime-adapter';
+export {
+  ClaudeCliAdapter,
+  buildRecognitionPrompt,
+  looksLikeAuthError,
+  parseClaudeVersion,
+  sanitizeProjectDir,
+  parseEnvelopeToRecognition,
+  stripCodeFence,
+} from './claude-cli-adapter';
+export type { ClaudeCliAdapterOptions } from './claude-cli-adapter';
+export { FakeCliRuntimeAdapter } from './fake-cli-runtime-adapter';
+export type { FakeCliAdapterOptions, FakeSessionRecord } from './fake-cli-runtime-adapter';
+export {
+  buildLaunchPlan,
+  buildDarwinLaunchPlan,
+  buildWindowsTerminalLaunchPlan,
+  buildPowershellLaunchPlan,
+  buildClaudeArgv,
+  executeLaunchPlan,
+  shQuote,
+  psQuote,
+  appleScriptQuote,
+} from './terminal-launcher';
+export type { LaunchPlan, TerminalPlatform, TerminalLauncherOptions } from './terminal-launcher';
 export { BrowserMockBridge } from './browser-mock';
 export { LocalBridge } from './local-bridge';
 export type { LocalBridgeOptions } from './local-bridge';

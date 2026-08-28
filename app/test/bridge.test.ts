@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { LocalBridge, readWorkPackageFile, writeWorkPackageFile } from '../src/bridge/node';
+import { LocalBridge, readWorkPackageFile, writeWorkPackageFile, FakeCliRuntimeAdapter } from '../src/bridge/node';
 import { BridgeError } from '../src/bridge/index';
 import type { WorkPackage } from '../src/bridge/index';
 
 function makeBridge() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mfp-bridge-'));
   const now = () => '2026-08-27T00:00:00.000Z';
-  return { root, bridge: new LocalBridge({ root, now }) };
+  return { root, bridge: new LocalBridge({ root, now, adapter: new FakeCliRuntimeAdapter() }) };
 }
 
 /** 模拟 Agent 直接写回工作包文件（外部进程写文件，桥接层读）。 */
@@ -112,13 +112,13 @@ describe('文件桥接契约（Issue #2）', () => {
   it('重启后未完成的 running 状态不能被再次 launch（持久化运行态）', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mfp-bridge2-'));
     const now = () => '2026-08-27T00:00:00.000Z';
-    const b1 = new LocalBridge({ root, now });
+    const b1 = new LocalBridge({ root, now, adapter: new FakeCliRuntimeAdapter() });
     const wp0 = await b1.saveRawInput({ text: '需求 BBBB' });
     await b1.recognize(wp0.requestId);
     await b1.register(wp0.requestId);
     await b1.launch(wp0.requestId);
 
-    const b2 = new LocalBridge({ root, now });
+    const b2 = new LocalBridge({ root, now, adapter: new FakeCliRuntimeAdapter() });
     await expect(b2.launch(wp0.requestId)).rejects.toThrow(/运行/);
   });
 });

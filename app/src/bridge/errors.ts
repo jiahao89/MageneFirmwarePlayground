@@ -24,7 +24,9 @@ export type BridgeErrorCode =
   | 'CLI_NOT_FOUND'
   | 'CLI_AUTH_FAILED'
   | 'CLI_TIMEOUT'
+  | 'SESSION_NOT_FOUND'
   | 'MALFORMED_OUTPUT'
+  | 'TERMINAL_LAUNCH_FAILED'
   | 'WORKSPACE_NOT_FOUND'
   | 'PERMISSION_DENIED'
   | 'INVALID_ARGUMENT'
@@ -47,7 +49,9 @@ const CODE_CATEGORY: Record<BridgeErrorCode, ErrorCategory> = {
   CLI_NOT_FOUND: 'cli',
   CLI_AUTH_FAILED: 'cli',
   CLI_TIMEOUT: 'cli',
+  SESSION_NOT_FOUND: 'cli',
   MALFORMED_OUTPUT: 'state',
+  TERMINAL_LAUNCH_FAILED: 'io',
   WORKSPACE_NOT_FOUND: 'io',
   PERMISSION_DENIED: 'io',
   INVALID_ARGUMENT: 'argument',
