@@ -1,7 +1,12 @@
 # 本地桥接契约（Bridge Contract）
 
 Issue #1 定义的「最高测试缝隙」—— Web UI 与本地桥接层之间的公共操作面。本文档是
-契约的唯一事实来源，Web UI、Node FileBridge、Tauri Rust 命令层三者都必须对齐。
+契约的唯一事实来源，Web UI、Node 桥接服务、Tauri Rust 命令层三者都必须对齐。
+
+> **Tauri 桥接方案（Issue #6）**：Rust 命令层是薄代理，经行分隔 JSON-RPC 把
+> invoke 转发给 Node 桥接服务（`dist-bridge/bridge-server.cjs`），契约/状态机/
+> 持久化/终端启动只在本 TS 层实现一份。方案全文见
+> [`design/2026-08-27-MFP-Tauri桥接方案.md`](../../../design/2026-08-27-MFP-Tauri桥接方案.md)。
 
 ## 入口
 

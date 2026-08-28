@@ -61,18 +61,28 @@ app/
 │   ├── concurrency.test.ts   #   重复运行
 │   ├── work-package.test.ts  #   malformed 状态 + 任务卡校验
 │   └── mock.test.ts          #   mock 确定性 + fake CLI parity
-└── src-tauri/                # ── Tauri/Rust 壳（脚手架，未编译验证）──
+└── src-tauri/                # ── Tauri/Rust 壳（Issue #6：薄代理，真实命令层）──
     ├── Cargo.toml / build.rs / tauri.conf.json
-    ├── src/{main,lib,commands}.rs   # 命令层镜像桥接契约（占位）
+    ├── src/main.rs / lib.rs
+    ├── src/commands.rs       # 命令层：invoke → JSON-RPC 透传（零业务逻辑）
+    ├── src/bridge_client.rs  # 桥接服务客户端 + 定位解析（含 Rust 单测）
     └── capabilities/default.json
 ```
+
+**桌面壳桥接架构（Issue #6）**：Rust 命令层经行分隔 JSON-RPC 调用 Node 桥接服务
+（`dist-bridge/bridge-server.cjs`，由 `npm run build:bridge` 产出），契约/状态机/
+持久化/终端启动只在 TypeScript 层实现一份。详见
+[`design/2026-08-27-MFP-Tauri桥接方案.md`](../design/2026-08-27-MFP-Tauri桥接方案.md)
+与 [`src/bridge/README.md`](src/bridge/README.md)。
 
 ## 运行命令
 
 | 命令 | 作用 | 前置条件 |
 |---|---|---|
 | `cd app && npm install` | 安装依赖 | node ≥ 20（本机 v26 已就绪） |
-| `npm test` | 运行桥接契约测试（Vitest，81 用例） | — |
+| `npm test` | 运行桥接契约测试（Vitest，89 用例） | — |
+| `npm run build:bridge` | 打包桥接服务到 `dist-bridge/bridge-server.cjs`（Tauri 壳依赖） | — |
+| `MFP_ROOT=<仓库根> npm run tauri dev` | 启动 Tauri 桌面壳（真实桥接） | Rust 工具链 + 先 `build:bridge`（`beforeDevCommand` 会自动执行） |
 | `npm run typecheck` | TypeScript 严格类型检查 | — |
 | `npm run build` | 类型检查 + 打包 Web UI（dist/） | — |
 | `npm run dev` | 启动 Vite dev server（访问 Web UI，mock 模式） | — |

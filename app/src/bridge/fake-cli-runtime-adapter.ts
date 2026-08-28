@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BridgeError } from './errors';
@@ -59,12 +60,11 @@ export class FakeCliRuntimeAdapter implements RuntimeAdapter {
 
   async recognize(raw: RawInput): Promise<RecognitionResult> {
     if (this.opts.installed === false) throw new BridgeError('CLI_NOT_FOUND', '未找到 claude 可执行文件');
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const fakeCli = path.resolve(here, 'bin', 'fake-cli.mjs');
+    const fakeCli = resolveFakeCliPath();
     const res = await runProcess({
       command: process.execPath,
       args: [fakeCli],
-      cwd: here,
+      cwd: path.dirname(fakeCli),
       input: JSON.stringify({ text: raw.text, sourceDescription: raw.sourceDescription }),
     });
     if (res.code !== 0) throw new BridgeError('MALFORMED_OUTPUT', `fake CLI 异常退出：${res.stderr}`);
@@ -99,4 +99,36 @@ export class FakeCliRuntimeAdapter implements RuntimeAdapter {
 
 function fakePlan(cwd: string): LaunchPlan {
   return { command: 'fake-terminal', args: [cwd], description: 'fake terminal plan' };
+}
+
+/**
+ * 定位 fake-cli.mjs：
+ *  - 源码 / vitest（ESM）：相对本模块文件 `bin/fake-cli.mjs`
+ *  - esbuild CJS 捆绑（dist-bridge/）：相对捆绑目录（build:bridge 会复制过去）
+ */
+function resolveFakeCliPath(): string {
+  const candidates: string[] = [];
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.url) {
+      candidates.push(path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'bin', 'fake-cli.mjs'));
+    }
+  } catch {
+    /* 捆绑环境无 import.meta */
+  }
+  try {
+    if (typeof __dirname === 'string') {
+      candidates.push(path.resolve(__dirname, 'fake-cli.mjs'));
+      candidates.push(path.resolve(__dirname, 'bin', 'fake-cli.mjs'));
+    }
+  } catch {
+    /* ESM 环境无 __dirname */
+  }
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch {
+      /* continue */
+    }
+  }
+  throw new BridgeError('CLI_NOT_FOUND', `找不到 fake CLI 夹具（候选：${candidates.join('；') || '无'}）`);
 }
