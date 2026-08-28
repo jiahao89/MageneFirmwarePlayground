@@ -35,6 +35,12 @@ export interface WorkPackageBridgeDeps {
   preflightRaw: (requestId: string) => Promise<PreflightResult>;
   /** 会话驱动；默认内存 mock（浏览器与 UI 测试沿用既有行为）。 */
   sessions?: SessionDriver;
+  /**
+   * 会话进程存活性探测（Issue #6 验收 F-4 修复）：processState 为 running 时
+   * 用于对账——进程已不存在则回写 exited，避免状态永远停留在 running。
+   * 缺省（浏览器 mock）不做对账。
+   */
+  sessionAlive?: (sessionId: string) => Promise<boolean>;
 }
 
 export class WorkPackageBridge implements MfpBridge {
@@ -43,6 +49,7 @@ export class WorkPackageBridge implements MfpBridge {
   protected readonly recognizeRaw: (raw: RawInput) => Promise<RecognitionResult>;
   protected readonly preflightRaw: (requestId: string) => Promise<PreflightResult>;
   protected readonly sessions: SessionDriver;
+  protected readonly sessionAlive: ((sessionId: string) => Promise<boolean>) | undefined;
   protected readonly runGuard = new RunGuard();
   protected seq = 0;
 
@@ -52,6 +59,7 @@ export class WorkPackageBridge implements MfpBridge {
     this.recognizeRaw = deps.recognizeRaw;
     this.preflightRaw = deps.preflightRaw;
     this.sessions = deps.sessions ?? new MockSessionDriver();
+    this.sessionAlive = deps.sessionAlive;
   }
 
   async saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
@@ -127,7 +135,14 @@ export class WorkPackageBridge implements MfpBridge {
   async launch(requestId: string): Promise<LaunchResult> {
     const wp = await this.loadRequired(requestId);
     if (wp.session.processState === 'running') {
-      throw new BridgeError('CONCURRENT_RUN', `请求 ${requestId} 已处于运行状态`);
+      // 持久化状态显示运行中：先对账，进程确实已不存在则放行重新启动，
+      // 避免 stale running 状态把 launch 永远卡死（Issue #6 验收 F-4 修复）。
+      if (await this.isSessionAlive(wp.session.sessionId)) {
+        throw new BridgeError('CONCURRENT_RUN', `请求 ${requestId} 已处于运行状态`);
+      }
+      wp.session.processState = 'exited';
+      wp.updatedAt = this.now();
+      await this.store.save(wp);
     }
     this.runGuard.acquire(requestId, this.now);
     try {
@@ -201,17 +216,30 @@ export class WorkPackageBridge implements MfpBridge {
       // 原文件保留在磁盘，返回诊断态工作包（status: error）
       return buildDiagnosticWorkPackage(requestId, result.reason);
     }
-    return result.workPackage;
+    // 会话状态对账（Issue #6 验收 F-4 修复）：UI 每 3 秒轮询本方法，
+    // 进程已不存在时把 running 回写为 exited，避免状态永远停留。
+    return this.reconcileSessionState(result.workPackage);
   }
 
   async answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
     const wp = await this.loadRequired(requestId);
-    assertTransition(wp.status, 'processing', 'answerQuestion（PM 回答后继续）');
+    // 同一轮澄清允许连续回答（Issue #6 验收 F-3 修复）：首个回答把
+    // pending_answer 迁移到 processing；其后同轮回答在 processing 下继续，
+    // 不再被状态机拒绝。其他状态（如 pending_review/completed）仍拒绝。
+    if (wp.status === 'pending_answer') {
+      assertTransition(wp.status, 'processing', 'answerQuestion（PM 回答后继续）');
+      wp.status = 'processing';
+    } else if (wp.status !== 'processing') {
+      throw new BridgeError(
+        'INVALID_TRANSITION',
+        `回答澄清问题需要状态为 pending_answer 或 processing（当前 ${wp.status}）`,
+        { requestId, status: wp.status },
+      );
+    }
     const q = wp.questions.find((x) => x.id === questionId);
     if (!q) throw new BridgeError('INVALID_ARGUMENT', `找不到澄清问题：${questionId}`);
     q.answer = answer;
     q.answeredAt = this.now();
-    wp.status = 'processing';
     wp.updatedAt = this.now();
     await this.store.save(wp);
     return wp;
@@ -250,6 +278,26 @@ export class WorkPackageBridge implements MfpBridge {
 
   async preflight(requestId: string): Promise<PreflightResult> {
     return this.preflightRaw(requestId);
+  }
+
+  /** 会话状态对账：running 且进程已不存在 → 回写 exited 并持久化。 */
+  private async reconcileSessionState(wp: WorkPackage): Promise<WorkPackage> {
+    if (wp.session.processState !== 'running' || !wp.session.sessionId) return wp;
+    if (await this.isSessionAlive(wp.session.sessionId)) return wp;
+    wp.session.processState = 'exited';
+    wp.updatedAt = this.now();
+    await this.store.save(wp);
+    return wp;
+  }
+
+  /** 存活性探测；未注入探测（浏览器 mock）或探测异常时视为存活（保守，不误杀）。 */
+  private async isSessionAlive(sessionId: string | undefined): Promise<boolean> {
+    if (!this.sessionAlive || !sessionId) return true;
+    try {
+      return await this.sessionAlive(sessionId);
+    } catch {
+      return true;
+    }
   }
 
   /** 读取并校验：missing → INVALID_ARGUMENT；malformed → 抛 MALFORMED_STATE（保留原文件）。 */

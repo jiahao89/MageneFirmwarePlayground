@@ -15,6 +15,9 @@ import {
 } from '../src/bridge/node';
 import type { LaunchPlan, StartSessionSpec } from '../src/bridge/node';
 
+// 捕获传给终端执行器的会话规格（含 --resume 目标）
+type CapturedSpec = StartSessionSpec;
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = path.resolve(here, 'fixtures', 'fake-claude.mjs');
 
@@ -47,14 +50,14 @@ afterAll(() => {
 });
 
 function makeAdapter(overrides?: Record<string, unknown>) {
-  const plans: LaunchPlan[] = [];
+  const plans: CapturedSpec[] = [];
   const adapter = new ClaudeCliAdapter({
     cliPath: wrapper,
     homeDir,
     platform: 'darwin',
-    launch: async (_p, _spec, _bin, _o) => {
-      plans.push({ command: 'captured', args: [], description: 'captured' });
-      return { command: 'captured', args: [], description: 'captured' };
+    launch: async (_p, spec, _bin, _o) => {
+      plans.push(spec);
+      return { command: 'osascript', args: ['-e', 'captured'], description: 'captured' } as LaunchPlan;
     },
     ...overrides,
   });
@@ -126,16 +129,39 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     }
   });
 
-  it('startSession(new)：写启动文件并调用终端执行器', async () => {
-    const { adapter } = makeAdapter();
-    const spec = makeSpec({ mode: 'new' });
-    const result = await adapter.startSession(spec);
-    expect(result.sessionId).toBe(spec.sessionId);
-    expect(result.fallback).toBe(false);
-    expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('AGENTS.md');
+  it('startSession(new)：-p 种子建立会话，终端用 --resume 接续（F-2 修复）', async () => {
+    process.env.FAKE_CLAUDE_SESSION_ID = 'seeded-sid-0001';
+    try {
+      const { adapter, plans } = makeAdapter();
+      const spec = makeSpec({ mode: 'new' });
+      const result = await adapter.startSession(spec);
+      // sessionId 来自 -p 信封（已落盘、可被 --resume 找到），而非生成的 spec.sessionId
+      expect(result.sessionId).toBe('seeded-sid-0001');
+      expect(result.fallback).toBe(false);
+      expect(plans).toHaveLength(1);
+      // 终端命令以 --resume <种子会话> 接续交互（不再用 --session-id）
+      expect(plans[0].mode).toBe('resume');
+      expect(plans[0].resumeSessionId).toBe('seeded-sid-0001');
+      expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('AGENTS.md');
+    } finally {
+      delete process.env.FAKE_CLAUDE_SESSION_ID;
+    }
   });
 
-  it('startSession(resume)：会话文件存在 → 恢复原会话', async () => {
+  it('startSession(new)：种子阶段认证失败 → 打开终端前抛 CLI_AUTH_FAILED', async () => {
+    process.env.FAKE_CLAUDE_AUTH_FAIL = '1';
+    try {
+      const { adapter, plans } = makeAdapter();
+      await expect(adapter.startSession(makeSpec({ mode: 'new' }))).rejects.toMatchObject({
+        payload: expect.objectContaining({ code: 'CLI_AUTH_FAILED' }),
+      });
+      expect(plans).toHaveLength(0); // 终端未被打开
+    } finally {
+      delete process.env.FAKE_CLAUDE_AUTH_FAIL;
+    }
+  });
+
+  it('startSession(resume)：会话文件存在 → 直接恢复，不重新种子', async () => {
     const { adapter } = makeAdapter();
     const cwd = path.join(tmp, 'mfp-root');
     const sessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -149,22 +175,27 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     expect(result.fallback).toBe(false);
   });
 
-  it('startSession(resume)：会话文件缺失 → 降级为新会话（基于工作包）', async () => {
-    const { adapter } = makeAdapter();
-    const cwd = path.join(tmp, 'mfp-root-2');
-    const spec = makeSpec({
-      mode: 'resume',
-      resumeSessionId: 'missing-session-id',
-      cwd,
-      sessionId: 'new-fallback-id',
-      startupInstruction: '（降级启动指令）请从工作包续接。',
-    });
-    const result = await adapter.startSession(spec);
-    expect(result.sessionId).toBe('new-fallback-id');
-    expect(result.fallback).toBe(true);
-    expect(result.lastError?.code).toBe('SESSION_NOT_FOUND');
-    // 降级时启动文件使用降级指令
-    expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('降级启动指令');
+  it('startSession(resume)：会话文件缺失 → 降级为种子新会话（基于工作包）', async () => {
+    process.env.FAKE_CLAUDE_SESSION_ID = 'seeded-sid-0002';
+    try {
+      const { adapter } = makeAdapter();
+      const cwd = path.join(tmp, 'mfp-root-2');
+      const spec = makeSpec({
+        mode: 'resume',
+        resumeSessionId: 'missing-session-id',
+        cwd,
+        sessionId: 'new-fallback-id',
+        startupInstruction: '（降级启动指令）请从工作包续接。',
+      });
+      const result = await adapter.startSession(spec);
+      expect(result.sessionId).toBe('seeded-sid-0002'); // 降级 = 种子建立的新会话
+      expect(result.fallback).toBe(true);
+      expect(result.lastError?.code).toBe('SESSION_NOT_FOUND');
+      // 降级时启动文件使用降级指令
+      expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('降级启动指令');
+    } finally {
+      delete process.env.FAKE_CLAUDE_SESSION_ID;
+    }
   });
 
   it('会话元数据不含任何凭据字段（不保存 API key）', async () => {
@@ -172,7 +203,9 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     const result = await adapter.startSession(makeSpec({ mode: 'new' }));
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(/api[_ -]?key|token|secret|credential/i);
-    expect(Object.keys(result).sort()).toEqual(['fallback', 'lastError', 'note', 'sessionId'].sort());
+    // note/lastError 仅降级时出现；此处应只有受控键，且无任何凭据键
+    expect(Object.keys(result)).toEqual(expect.arrayContaining(['sessionId', 'fallback']));
+    expect(Object.keys(result).some((k) => /api[_ -]?key|token|secret|credential|password/i.test(k))).toBe(false);
   });
 });
 
@@ -236,5 +269,9 @@ function makeSpec(overrides: Partial<StartSessionSpec>): StartSessionSpec {
     startupInstruction: '启动指令：读取 AGENTS.md 与工作包。',
     startupFile: path.join(tmp, 'startup', 'REQ-1.startup.txt'),
   };
-  return { ...base, ...overrides };
+  const spec = { ...base, ...overrides };
+  // 种子调用会以 cwd spawn 子进程，目录必须存在
+  fs.mkdirSync(spec.cwd, { recursive: true });
+  fs.mkdirSync(path.dirname(spec.startupFile), { recursive: true });
+  return spec;
 }

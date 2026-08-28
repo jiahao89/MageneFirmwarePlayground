@@ -7,6 +7,7 @@
 //   env FAKE_CLAUDE_AUTH_FAIL=1 → 认证错误（exit 1 + stderr）
 //   env FAKE_CLAUDE_BAD_ENVELOPE=1 → 输出非法信封
 //   env FAKE_CLAUDE_VERSION       → 覆盖版本文本
+//   env FAKE_CLAUDE_SESSION_ID    → 覆盖 -p 信封中的 session_id（会话种子测试用）
 
 const args = process.argv.slice(2);
 
@@ -46,7 +47,7 @@ if (args.includes('--version')) {
       type: 'result',
       subtype: 'success',
       is_error: false,
-      session_id: 'fake-session-0001',
+      session_id: process.env.FAKE_CLAUDE_SESSION_ID || 'fake-session-0001',
       result,
     };
     process.stdout.write(JSON.stringify(envelope));

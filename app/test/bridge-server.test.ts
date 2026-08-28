@@ -95,7 +95,8 @@ describe('桥接服务 RPC（Issue #6 Tauri 子进程协议）', () => {
     const read = await send('readWorkPackage', { requestId: wp0.requestId });
     const wp2 = read.result as { status: string; session: { processState?: string } };
     expect(wp2.status).toBe('processing');
-    expect(wp2.session.processState).toBe('running');
+    // fake 适配器会话无真实进程：readWorkPackage 对账后回写 exited（F-4 修复行为）
+    expect(wp2.session.processState).toBe('exited');
 
     const list = await send('listWorkPackages');
     expect((list.result as unknown[]).length).toBeGreaterThanOrEqual(1);
@@ -116,6 +117,13 @@ describe('桥接服务 RPC（Issue #6 Tauri 子进程协议）', () => {
     const wp = saved.result as { requestId: string };
     await send('recognize', { requestId: wp.requestId });
     await send('register', { requestId: wp.requestId });
+    await send('launch', { requestId: wp.requestId });
+    // 模拟 Agent 写回问题（processing → pending_answer），使回答操作处于合法状态
+    const file = `${root}/.mfp/work/${wp.requestId}.json`;
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    onDisk.questions = [{ id: 'Q1', text: '问题一' }];
+    onDisk.status = 'pending_answer';
+    fs.writeFileSync(file, JSON.stringify(onDisk));
     const res = await send('answerQuestion', { requestId: wp.requestId, questionId: 'nope', answer: 'x' });
     expect(res.ok).toBe(false);
     expect((res.error as { code: string }).code).toBe('INVALID_ARGUMENT');

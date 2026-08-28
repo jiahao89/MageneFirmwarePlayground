@@ -4,6 +4,7 @@ import { WorkPackageBridge } from './work-package-bridge';
 import { FileWorkPackageStore } from './file-work-package-store';
 import { AdapterSessionDriver } from './session-driver';
 import { PathGuard } from './path-guard';
+import { runProcess } from './process-runner';
 import { ClaudeCliAdapter } from './claude-cli-adapter';
 import type { RuntimeAdapter } from './runtime-adapter';
 import type { RawInput, PreflightResult, PreflightCheck } from './types';
@@ -25,6 +26,8 @@ export interface LocalBridgeOptions {
   terminalApp?: string;
   /** 新会话 ID 生成器（测试注入确定值）。 */
   newSessionId?: () => string;
+  /** 会话进程存活性探测（测试注入；默认 pgrep，Windows 暂不对账）。 */
+  sessionAlive?: (sessionId: string) => Promise<boolean>;
 }
 
 export class LocalBridge extends WorkPackageBridge {
@@ -47,10 +50,34 @@ export class LocalBridge extends WorkPackageBridge {
       recognizeRaw: (raw: RawInput) => adapter.recognize(raw),
       preflightRaw: (requestId: string) => runPreflight(guard, adapter, requestId),
       sessions: new AdapterSessionDriver(adapter, { root: guard.root, newSessionId: opts.newSessionId }),
+      sessionAlive: opts.sessionAlive ?? defaultSessionAlive(),
     });
     this.guard = guard;
     this.adapter = adapter;
   }
+}
+
+/**
+ * 会话进程存活性探测（Issue #6 验收 F-4 修复）：
+ * macOS/Linux 用 pgrep 匹配命令行同时含 claude 与 sessionId 的进程；
+ * Windows 无统一的参数级进程查询（tasklist 不显示命令行参数），暂不对账
+ * （保守视为存活），待 Windows 联调时补充（见 Issue #6 Windows 清单）。
+ */
+export function defaultSessionAlive(): (sessionId: string) => Promise<boolean> {
+  if (process.platform === 'win32') return async () => true;
+  return async (sessionId: string) => {
+    try {
+      const res = await runProcess({
+        command: 'pgrep',
+        args: ['-f', `claude.*${sessionId}`],
+        cwd: process.cwd(),
+        timeoutMs: 5_000,
+      });
+      return res.code === 0;
+    } catch {
+      return true; // 探测失败保守视为存活，不误杀
+    }
+  };
 }
 
 /**

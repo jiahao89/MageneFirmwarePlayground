@@ -27,6 +27,19 @@ describe('启动指令（Issue #3）', () => {
     expect(text).toContain('REQ-abc');
   });
 
+  it('回归 F-4：PRD 产出后的强制写回契约（prdPath/prdVersion/artifacts/pending_review）', () => {
+    const text = buildStartupInstruction(input);
+    expect(text).toContain('prdPath');
+    expect(text).toContain('prdVersion');
+    expect(text).toContain('artifacts');
+    expect(text).toContain('pending_review');
+    // 指明写回目标文件与相对路径示例
+    expect(text).toContain('.mfp/work/REQ-abc.json');
+    expect(text).toContain('02-PRD.md');
+    // 降级版同样包含该契约（两条指令共享主体）
+    expect(buildFallbackStartupInstruction(input)).toContain('prdPath');
+  });
+
   it('函数签名只接受受控字段（不含用户原文参数）', () => {
     // 编译期约束的运行时印证：构造参数只有 requestId 与相对路径。
     const keys = Object.keys(input).sort();

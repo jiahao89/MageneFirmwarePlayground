@@ -179,6 +179,25 @@ Agent 专用逻辑的隔离边界（Issue #1「runtime adapter」）。MVP 只�
 
 无历史数据迁移负担：Issue #7 仅交付内存骨架，未产生持久化工作包；文件布局为本次新增。
 
+## Issue #6 真实验收修复（行为变化）
+
+1. **同轮连续回答**：`answerQuestion` 允许 `pending_answer`（首个回答 → `processing`）与
+   `processing`（同轮后续回答，不迁移状态）；其余状态仍拒绝。Agent 一轮写回多问时，
+   PM 在 UI 逐题提交不再被 `INVALID_TRANSITION` 阻断。
+2. **PRD 强制写回契约**：启动指令（`session-instruction.ts`）显式要求 Agent 产出 PRD 后
+   写回 `prdPath` / `prdVersion` / `artifacts` / `status=pending_review` /
+   `taskCard.currentPhase`，否则 Web 端看不到产出。
+3. **会话状态对账**：`readWorkPackage` 在 `processState=running` 时探测会话进程
+   （默认 `pgrep`，可注入；Windows 暂不对账），进程已不存在则回写 `exited` 并持久化；
+   `launch` 遇 stale running 先对账再放行，不再永远 `CONCURRENT_RUN`。
+4. **会话建立改用种子**：claude 2.1.229 交互模式 + `--session-id` 的 transcript 不落盘
+   （实测），`--resume` 报 "No conversation found"。现改为：新会话先以最小 `-p` 调用建立
+   会话（`envelope.session_id` 真实落盘，已实测），终端再用 `claude --resume <id> "<启动
+   指令>"` 接续交互；认证错误在打开终端前暴露。resume 前置检查（会话文件存在性）语义
+   不变，缺失仍走 fallback 并记录 `SESSION_NOT_FOUND`。
+5. **Rust 脚本候选路径**：`server_script_candidates` 增加 `../dist-bridge`，修复
+   `tauri dev`（二进制 cwd=`app/src-tauri`）下找不到桥接服务的问题。
+
 ## 确定性 mock
 
 `mock.ts`（前端）与 `bin/fake-cli.mjs`（进程）必须输出一致；`test/mock.test.ts` 的

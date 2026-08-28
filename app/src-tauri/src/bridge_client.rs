@@ -167,11 +167,13 @@ pub fn pick_first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates.iter().find(|p| p.is_file()).cloned()
 }
 
-/// 桥接服务脚本候选路径（dev 从 app/ 或仓库根运行；打包后用 MFP_BRIDGE_SERVER 指定）。
+/// 桥接服务脚本候选路径（dev 从 app/、仓库根或 src-tauri 运行；打包后用 MFP_BRIDGE_SERVER 指定）。
+/// Issue #6 验收 F-1 修复：`tauri dev` 下二进制 cwd = app/src-tauri，需覆盖 `../dist-bridge`。
 pub fn server_script_candidates(cwd: &Path, exe_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut v = vec![
         cwd.join("dist-bridge").join("bridge-server.cjs"),
         cwd.join("app").join("dist-bridge").join("bridge-server.cjs"),
+        cwd.join("..").join("dist-bridge").join("bridge-server.cjs"),
     ];
     if let Some(d) = exe_dir {
         v.push(d.join("dist-bridge").join("bridge-server.cjs"));
@@ -283,6 +285,10 @@ mod tests {
         assert!(candidates.contains(&PathBuf::from(
             "/repo/app/target/release/dist-bridge/bridge-server.cjs"
         )));
+        // F-1：tauri dev 的 cwd 是 app/src-tauri，必须能解析到 app/dist-bridge
+        let src_tauri = Path::new("/repo/app/src-tauri");
+        let from_src_tauri = server_script_candidates(src_tauri, None);
+        assert!(from_src_tauri.contains(&PathBuf::from("/repo/app/src-tauri/../dist-bridge/bridge-server.cjs")));
     }
 
     #[test]

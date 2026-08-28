@@ -43,6 +43,8 @@ export interface ClaudeCliAdapterOptions {
   launch?: typeof executeLaunchPlan;
   /** 认证探测超时（默认 60s）。 */
   authProbeTimeoutMs?: number;
+  /** 会话种子调用超时（默认 90s：一次最小 -p 调用）。 */
+  seedTimeoutMs?: number;
   /** 识别超时（默认 300s：识别属于真实模型调用）。 */
   recognizeTimeoutMs?: number;
 }
@@ -101,6 +103,7 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
   private readonly terminalApp?: string;
   private readonly launch: typeof executeLaunchPlan;
   private readonly authProbeTimeoutMs: number;
+  private readonly seedTimeoutMs: number;
   private readonly recognizeTimeoutMs: number;
 
   constructor(opts?: ClaudeCliAdapterOptions) {
@@ -111,6 +114,7 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
     this.terminalApp = opts?.terminalApp;
     this.launch = opts?.launch ?? executeLaunchPlan;
     this.authProbeTimeoutMs = opts?.authProbeTimeoutMs ?? 60_000;
+    this.seedTimeoutMs = opts?.seedTimeoutMs ?? 90_000;
     this.recognizeTimeoutMs = opts?.recognizeTimeoutMs ?? 300_000;
   }
 
@@ -188,29 +192,72 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
     const bin = this.findBinary();
     if (!bin) throw new BridgeError('CLI_NOT_FOUND', '未找到 claude 可执行文件');
 
-    let effective = spec;
     let fallback = false;
     let note: string | undefined;
     let lastError: { code: string; message: string } | undefined;
+    let resumeSessionId: string | undefined = spec.resumeSessionId;
 
     if (spec.mode === 'resume' && spec.resumeSessionId) {
       const sessionFile = this.sessionFilePath(spec.resumeSessionId, spec.cwd);
-      if (!fs.existsSync(sessionFile)) {
+      if (fs.existsSync(sessionFile)) {
+        // 会话文件存在：transcript 已落盘，--resume 可直接恢复。
+      } else {
         // resume 失败 → 基于工作包创建新会话（启动指令已由桥接层换成降级版）。
         fallback = true;
         note = `会话 ${spec.resumeSessionId} 无法恢复（会话文件不存在），已基于工作包创建新会话`;
         lastError = { code: 'SESSION_NOT_FOUND', message: note };
-        effective = { ...spec, mode: 'new' };
+        resumeSessionId = undefined; // 落入「新建会话」流程
       }
     }
 
+    let sessionId: string;
+    if (resumeSessionId) {
+      sessionId = resumeSessionId;
+    } else {
+      // 新建会话（Issue #6 验收 F-2 修复）：claude 2.1.229 中交互模式 + --session-id
+      // 的 transcript 不落盘，--resume 会报 "No conversation found"（实测）。
+      // 改为：先用一次最小 -p 调用建立会话（envelope.session_id 真实落盘，
+      // 已实测验证），再在终端用 --resume 接续交互并处理启动指令。
+      sessionId = await this.seedConversation(bin, spec);
+    }
+
     // 启动指令写入受控文件；终端命令只引用文件路径，不内联长文本。
-    fs.mkdirSync(path.dirname(effective.startupFile), { recursive: true });
-    fs.writeFileSync(effective.startupFile, effective.startupInstruction, 'utf8');
+    fs.mkdirSync(path.dirname(spec.startupFile), { recursive: true });
+    fs.writeFileSync(spec.startupFile, spec.startupInstruction, 'utf8');
 
-    await this.launch(this.platform, effective, bin, this.launcherOptions());
+    await this.launch(this.platform, { ...spec, mode: 'resume', resumeSessionId: sessionId }, bin, this.launcherOptions());
 
-    return { sessionId: effective.mode === 'resume' ? spec.resumeSessionId! : effective.sessionId, fallback, note, lastError };
+    return { sessionId, fallback, note, lastError };
+  }
+
+  /**
+   * 用最小 `-p` 调用建立可恢复的会话，返回真实（已落盘）的 session id。
+   * 种子提示只含受控文本（sessionName 由 requestId 派生），不含用户原文；
+   * 认证 / CLI 错误在此提前暴露（打开终端之前）。
+   */
+  private async seedConversation(bin: string, spec: StartSessionSpec): Promise<string> {
+    const res = await runProcess({
+      command: bin,
+      args: ['-p', '--output-format', 'json'],
+      cwd: spec.cwd,
+      input: `MFP 会话初始化锚点（${spec.sessionName}）。请只回复四个字：已就绪。不要使用任何工具。`,
+      timeoutMs: this.seedTimeoutMs,
+    });
+    if (res.code !== 0) {
+      const combined = `${res.stdout}\n${res.stderr}`;
+      if (looksLikeAuthError(combined)) {
+        throw new BridgeError('CLI_AUTH_FAILED', `启动会话失败：Claude Code 认证错误（${firstLine(res.stderr)}）`);
+      }
+      throw new BridgeError('MALFORMED_OUTPUT', `启动会话失败（exit ${res.code}）：${firstLine(res.stderr)}`);
+    }
+    const envelope = tryParseEnvelope(res.stdout);
+    if (!envelope || envelope.type !== 'result' || envelope.is_error) {
+      throw new BridgeError('MALFORMED_OUTPUT', `启动会话失败：无法解析会话信封（${firstLine(res.stdout)}）`);
+    }
+    if (typeof envelope.session_id !== 'string' || envelope.session_id.length === 0) {
+      throw new BridgeError('MALFORMED_OUTPUT', '启动会话失败：会话信封缺少 session_id');
+    }
+    return envelope.session_id;
   }
 
   /** 会话文件路径：~/.claude/projects/<cwd 非字母数字转 ->/<uuid>.jsonl。 */

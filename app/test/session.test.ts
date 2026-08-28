@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { LocalBridge, FakeCliRuntimeAdapter } from '../src/bridge/node';
+import { LocalBridge, FakeCliRuntimeAdapter, readWorkPackageFile, writeWorkPackageFile } from '../src/bridge/node';
 import { BridgeError } from '../src/bridge/index';
 
 let seq = 0;
@@ -11,7 +11,10 @@ function deterministicId(): string {
   return `uuid-${seq.toString().padStart(4, '0')}`;
 }
 
-function makeBridge(adapterOpts?: ConstructorParameters<typeof FakeCliRuntimeAdapter>[0]) {
+function makeBridge(
+  adapterOpts?: ConstructorParameters<typeof FakeCliRuntimeAdapter>[0],
+  opts?: { sessionAlive?: (sessionId: string) => Promise<boolean> },
+) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mfp-session-'));
   // 规则/事实源入口（preflight 检查用）
   fs.mkdirSync(path.join(root, 'knowledge-base', '01_事实源'), { recursive: true });
@@ -20,7 +23,15 @@ function makeBridge(adapterOpts?: ConstructorParameters<typeof FakeCliRuntimeAda
 
   const now = () => '2026-08-27T00:00:00.000Z';
   const adapter = new FakeCliRuntimeAdapter(adapterOpts);
-  const bridge = new LocalBridge({ root, now, adapter, newSessionId: deterministicId });
+  const bridge = new LocalBridge({
+    root,
+    now,
+    adapter,
+    newSessionId: deterministicId,
+    // 默认模拟「会话进程一直存活」，保持既有断言语义；
+    // 对账行为由专门的测试用例覆盖。
+    sessionAlive: opts?.sessionAlive ?? (async () => true),
+  });
   return { root, bridge, adapter };
 }
 
@@ -74,7 +85,7 @@ describe('会话生命周期（Issue #3）', () => {
     saved.session.processState = 'exited';
     fs.writeFileSync(file, JSON.stringify(saved));
 
-    const b2 = new LocalBridge({ root, now: () => '2026-08-27T00:00:00.000Z', adapter: new FakeCliRuntimeAdapter(), newSessionId: deterministicId });
+    const b2 = new LocalBridge({ root, now: () => '2026-08-27T00:00:00.000Z', adapter: new FakeCliRuntimeAdapter(), newSessionId: deterministicId, sessionAlive: async () => true });
     const resumed = await b2.resume(wp.requestId);
     expect(resumed.sessionId).toBe(saved.session.sessionId); // 复用已保存会话
     expect(resumed.fallback).toBeFalsy();
@@ -93,7 +104,7 @@ describe('会话生命周期（Issue #3）', () => {
     saved.session.processState = 'exited';
     fs.writeFileSync(rootFile, JSON.stringify(saved));
 
-    const b2 = new LocalBridge({ root, now: () => '2026-08-27T00:00:00.000Z', adapter: new FakeCliRuntimeAdapter({ resumeShouldFail: true }), newSessionId: deterministicId });
+    const b2 = new LocalBridge({ root, now: () => '2026-08-27T00:00:00.000Z', adapter: new FakeCliRuntimeAdapter({ resumeShouldFail: true }), newSessionId: deterministicId, sessionAlive: async () => true });
     const resumed = await b2.resume(wp.requestId);
     expect(resumed.fallback).toBe(true);
     expect(resumed.sessionId).not.toBe(saved.session.sessionId);
@@ -167,6 +178,75 @@ describe('会话生命周期（Issue #3）', () => {
     expect(keyNames.some((k) => /api[_ -]?key|apikey|token|secret|credential|password/i.test(k))).toBe(false);
     const sessionKeys = Object.keys(parsed.session).sort();
     expect(sessionKeys).toEqual(['cliVersion', 'processState', 'sessionId', 'startedAt'].sort());
+  });
+
+  it('回归 F-3：同一轮澄清问题可以连续回答', async () => {
+    const { root, bridge } = makeBridge();
+    const wp = await registered(bridge, '连续回答回归测试');
+    await bridge.launch(wp.requestId);
+    // 模拟 Agent 写回 3 个澄清问题（processing → pending_answer）
+    const file = path.join(root, '.mfp', 'work', `${wp.requestId}.json`);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    saved.questions = [
+      { id: 'Q1', text: '问题一' },
+      { id: 'Q2', text: '问题二' },
+      { id: 'Q3', text: '问题三' },
+    ];
+    saved.status = 'pending_answer';
+    fs.writeFileSync(file, JSON.stringify(saved));
+
+    // 首个回答：pending_answer → processing
+    const a1 = await bridge.answerQuestion(wp.requestId, 'Q1', '答案一');
+    expect(a1.status).toBe('processing');
+    // 同轮后续回答：processing 下继续，不再 INVALID_TRANSITION（回归点）
+    const a2 = await bridge.answerQuestion(wp.requestId, 'Q2', '答案二');
+    expect(a2.status).toBe('processing');
+    expect(a2.questions.find((q) => q.id === 'Q2')?.answer).toBe('答案二');
+    const a3 = await bridge.answerQuestion(wp.requestId, 'Q3', '答案三');
+    expect(a3.questions.filter((q) => q.answer).length).toBe(3);
+
+    // 负例：pending_review 下回答仍被拒绝
+    const saved2 = JSON.parse(fs.readFileSync(file, 'utf8'));
+    saved2.status = 'pending_review';
+    fs.writeFileSync(file, JSON.stringify(saved2));
+    await expect(bridge.answerQuestion(wp.requestId, 'Q1', '再答')).rejects.toMatchObject({
+      payload: expect.objectContaining({ code: 'INVALID_TRANSITION' }),
+    });
+  });
+
+  it('回归 F-4：会话进程结束后 readWorkPackage 把 running 对账为 exited 并持久化', async () => {
+    const { root, bridge } = makeBridge(undefined, { sessionAlive: async () => false });
+    const wp = await registered(bridge, '对账回归测试');
+    await bridge.launch(wp.requestId); // processState=running
+
+    const read = await bridge.readWorkPackage(wp.requestId);
+    expect(read.session.processState).toBe('exited');
+    // 持久化：磁盘文件同步为 exited
+    const file = path.join(root, '.mfp', 'work', `${wp.requestId}.json`);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).session.processState).toBe('exited');
+  });
+
+  it('回归 F-4：进程仍存活时保持 running；stale running 且进程已死时 launch 放行', async () => {
+    // 存活 → 不对账
+    const alive = makeBridge(undefined, { sessionAlive: async () => true });
+    const wp1 = await registered(alive.bridge, '存活对账测试');
+    await alive.bridge.launch(wp1.requestId);
+    expect((await alive.bridge.readWorkPackage(wp1.requestId)).session.processState).toBe('running');
+
+    // stale running + 进程已死：构造 pending_launch 但持久化会话状态为 running 的
+    // 工作包（如上次启动中途异常落盘），launch 应对账放行而非永远 CONCURRENT_RUN
+    const dead = makeBridge(undefined, { sessionAlive: async () => false });
+    const wp0 = await dead.bridge.saveRawInput({ text: '陈旧状态重启测试' });
+    await dead.bridge.recognize(wp0.requestId);
+    await dead.bridge.register(wp0.requestId);
+    const file = path.join(dead.root, '.mfp', 'work', `${wp0.requestId}.json`);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    saved.session = { sessionId: 'stale-session-id', processState: 'running', startedAt: 't' };
+    fs.writeFileSync(file, JSON.stringify(saved));
+
+    const res = await dead.bridge.launch(wp0.requestId);
+    expect(res.ok).toBe(true);
+    expect(res.sessionId).toBeTruthy();
   });
 });
 

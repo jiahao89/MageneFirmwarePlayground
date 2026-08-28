@@ -118,7 +118,7 @@ describe('文件桥接契约（Issue #2）', () => {
     await b1.register(wp0.requestId);
     await b1.launch(wp0.requestId);
 
-    const b2 = new LocalBridge({ root, now, adapter: new FakeCliRuntimeAdapter() });
+    const b2 = new LocalBridge({ root, now, adapter: new FakeCliRuntimeAdapter(), sessionAlive: async () => true });
     await expect(b2.launch(wp0.requestId)).rejects.toThrow(/运行/);
   });
 });
