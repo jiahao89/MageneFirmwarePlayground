@@ -43,24 +43,30 @@ export function psQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-/** claude 交互会话的参数（不含启动指令文本；文本经文件传入）。 */
+/**
+ * claude 交互会话的参数（不含启动指令文本；文本经文件传入）。
+ * resume 模式显式 --resume：会话推进全部由适配器的 -p headless 轮完成，
+ * 终端只负责挂载会话供 PM 查看与介入（交互 resume 不自动提交位置参数，实测），
+ * 因此 resume 不携带位置参数指令。
+ * new 模式为「自然会话」（不指定 id）：仅作降级展示路径；位置参数指令经启动文件传入。
+ */
 export function buildClaudeArgv(spec: StartSessionSpec, claudeBin: string): string[] {
   const args = [claudeBin];
   if (spec.mode === 'resume' && spec.resumeSessionId) {
     args.push('--resume', spec.resumeSessionId);
-  } else {
-    args.push('--session-id', spec.sessionId);
   }
   args.push('--name', spec.sessionName);
   return args;
 }
 
-/** macOS：osascript 驱动终端应用执行 `cd <root> && claude ... "$(cat <file>)"`。 */
+/** macOS：osascript 驱动终端应用执行 `cd <root> && claude ...`（new 模式追加启动文件位置参数）。 */
 export function buildDarwinLaunchPlan(spec: StartSessionSpec, claudeBin: string, opts?: TerminalLauncherOptions): LaunchPlan {
   const app = opts?.terminalApp ?? 'Terminal';
-  const shCommand = `cd ${shQuote(spec.cwd)} && ${buildClaudeArgv(spec, claudeBin)
+  const argv = buildClaudeArgv(spec, claudeBin)
     .map((a) => (/^[A-Za-z0-9/_@.:-]+$/.test(a) ? a : shQuote(a)))
-    .join(' ')} "$(cat ${shQuote(spec.startupFile)})"`;
+    .join(' ');
+  const promptArg = spec.mode === 'new' ? ` "$(cat ${shQuote(spec.startupFile)})"` : '';
+  const shCommand = `cd ${shQuote(spec.cwd)} && ${argv}${promptArg}`;
   const script = `tell application ${appleScriptQuote(app)}\n  activate\n  do script ${appleScriptQuote(shCommand)}\nend tell`;
   return {
     command: 'osascript',
@@ -69,12 +75,14 @@ export function buildDarwinLaunchPlan(spec: StartSessionSpec, claudeBin: string,
   };
 }
 
-/** Windows Terminal：`wt.exe -d <root> powershell -NoExit -Command "& claude ... (Get-Content -Raw <file>)"`。 */
+/** Windows Terminal：`wt.exe -d <root> powershell -NoExit -Command "& claude ..."`（new 模式追加启动文件位置参数）。 */
 export function buildWindowsTerminalLaunchPlan(spec: StartSessionSpec, claudeBin: string): LaunchPlan {
-  const psCommand = `& ${psQuote(claudeBin)} ${buildClaudeArgv(spec, claudeBin)
+  const argv = buildClaudeArgv(spec, claudeBin)
     .slice(1)
     .map((a) => (/^[A-Za-z0-9-]+$/.test(a) ? a : psQuote(a)))
-    .join(' ')} (Get-Content -Raw ${psQuote(spec.startupFile)})`;
+    .join(' ');
+  const promptArg = spec.mode === 'new' ? ` (Get-Content -Raw ${psQuote(spec.startupFile)})` : '';
+  const psCommand = `& ${psQuote(claudeBin)} ${argv}${promptArg}`;
   return {
     command: 'wt.exe',
     args: ['-d', spec.cwd, 'powershell', '-NoExit', '-Command', psCommand],
@@ -82,12 +90,14 @@ export function buildWindowsTerminalLaunchPlan(spec: StartSessionSpec, claudeBin
   };
 }
 
-/** PowerShell 回退：`powershell -NoExit -Command "Set-Location <root>; & claude ..."`。 */
+/** PowerShell 回退：`powershell -NoExit -Command "Set-Location <root>; & claude ..."`（new 模式追加启动文件位置参数）。 */
 export function buildPowershellLaunchPlan(spec: StartSessionSpec, claudeBin: string): LaunchPlan {
-  const psCommand = `Set-Location -LiteralPath ${psQuote(spec.cwd)}; & ${psQuote(claudeBin)} ${buildClaudeArgv(spec, claudeBin)
+  const argv = buildClaudeArgv(spec, claudeBin)
     .slice(1)
     .map((a) => (/^[A-Za-z0-9-]+$/.test(a) ? a : psQuote(a)))
-    .join(' ')} (Get-Content -Raw ${psQuote(spec.startupFile)})`;
+    .join(' ');
+  const promptArg = spec.mode === 'new' ? ` (Get-Content -Raw ${psQuote(spec.startupFile)})` : '';
+  const psCommand = `Set-Location -LiteralPath ${psQuote(spec.cwd)}; & ${psQuote(claudeBin)} ${argv}${promptArg}`;
   return {
     command: 'powershell.exe',
     args: ['-NoExit', '-Command', psCommand],

@@ -129,7 +129,7 @@ describe('桥接服务 RPC（Issue #6 Tauri 子进程协议）', () => {
     expect((res.error as { code: string }).code).toBe('INVALID_ARGUMENT');
   });
 
-  it('并发重复启动经 RPC 传播：CONCURRENT_RUN', async () => {
+  it('重复启动经 RPC 传播被拒绝（INVALID_TRANSITION）', async () => {
     const saved = await send('saveRawInput', { req: { text: '需求 CCCC 并发测试' } });
     const wp = saved.result as { requestId: string };
     await send('recognize', { requestId: wp.requestId });
@@ -137,7 +137,8 @@ describe('桥接服务 RPC（Issue #6 Tauri 子进程协议）', () => {
     await send('launch', { requestId: wp.requestId });
     const res = await send('launch', { requestId: wp.requestId });
     expect(res.ok).toBe(false);
-    expect((res.error as { code: string }).code).toBe('CONCURRENT_RUN');
+    // v2：首轮完成后守卫即释放，重复启动由状态机拦截；继续推进应走 resume
+    expect((res.error as { code: string }).code).toBe('INVALID_TRANSITION');
   });
 
   it('未知方法 → INVALID_ARGUMENT', async () => {

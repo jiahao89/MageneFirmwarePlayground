@@ -66,13 +66,16 @@ describe('会话生命周期（Issue #3）', () => {
     await expect(bridge.launch(wp.requestId)).rejects.toThrowError(BridgeError);
   });
 
-  it('resume：会话在运行 → 返回既有会话（不新起）', async () => {
+  it('resume：真实执行继续轮，复用既有会话（不新起会话）', async () => {
     const { bridge, adapter } = makeBridge();
     const wp = await registered(bridge);
     const launched = await bridge.launch(wp.requestId);
     const resumed = await bridge.resume(wp.requestId);
     expect(resumed.sessionId).toBe(launched.sessionId);
-    expect(adapter.sessions).toHaveLength(1); // 未新增会话
+    // v2：每次 resume 都跑继续轮（第二次适配器调用），但仍是同一会话
+    expect(adapter.sessions).toHaveLength(2);
+    expect(adapter.sessions[1].mode).toBe('resume');
+    expect(adapter.sessions[1].sessionId).toBe(launched.sessionId);
   });
 
   it('resume：终端关闭后恢复 → 使用已保存会话，状态不变', async () => {

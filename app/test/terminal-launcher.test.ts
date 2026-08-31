@@ -26,18 +26,20 @@ function makeSpec(overrides?: Partial<StartSessionSpec>): StartSessionSpec {
 const CLAUDE_BIN = '/opt/homebrew/bin/claude';
 
 describe('终端启动计划（Issue #3）', () => {
-  it('macOS：osascript 驱动 Terminal，含 cd 根目录 + --session-id + 读启动文件', () => {
+  it('macOS：osascript 驱动 Terminal，含 cd 根目录 + --name + 读启动文件（自然会话，无 id flag）', () => {
     const plan = buildDarwinLaunchPlan(makeSpec(), CLAUDE_BIN);
     expect(plan.command).toBe('osascript');
     const script = plan.args.join(' ');
     expect(script).toContain('tell application "Terminal"');
     expect(script).toContain(`cd '/Users/jacko/Projects/MageneFirmwarePlayground'`);
-    expect(script).toContain('--session-id 11111111-2222-3333-4444-555555555555');
+    expect(script).toContain(`--name 'MFP · REQ-x'`);
+    // 自然而来的新会话：不携带 --session-id（transcript 落盘由适配器发现 sessionId）
+    expect(script).not.toContain('--session-id');
     // 注意：处于 AppleScript 字符串层，内层双引号被转义为 \"
     expect(script).toContain(`\\"$(cat '/Users/jacko/Projects/MageneFirmwarePlayground/.mfp/work/REQ-x.startup.txt')\\"`);
   });
 
-  it('macOS resume：使用 --resume <saved>，不用 --session-id', () => {
+  it('macOS resume：使用 --resume <saved>，不用 --session-id，不携带位置参数指令', () => {
     const plan = buildDarwinLaunchPlan(
       makeSpec({ mode: 'resume', resumeSessionId: 'saved-session-uuid' }),
       CLAUDE_BIN,
@@ -45,6 +47,8 @@ describe('终端启动计划（Issue #3）', () => {
     const script = plan.args.join(' ');
     expect(script).toContain('--resume saved-session-uuid');
     expect(script).not.toContain('--session-id');
+    // 推进已由 headless -p 轮完成；终端只挂载会话，不再注入启动文件位置参数
+    expect(script).not.toContain('$(cat');
   });
 
   it('Windows Terminal：wt.exe -d <root> + PowerShell 读启动文件', () => {
@@ -63,7 +67,7 @@ describe('终端启动计划（Issue #3）', () => {
     expect(plan.command).toBe('powershell.exe');
     const joined = plan.args.join(' ');
     expect(joined).toContain(`Set-Location -LiteralPath '/Users/jacko/Projects/MageneFirmwarePlayground'`);
-    expect(joined).toContain('--session-id');
+    expect(joined).not.toContain('--session-id'); // 自然而来的新会话
   });
 
   it('buildLaunchPlan 按平台路由', () => {
@@ -83,14 +87,8 @@ describe('终端启动计划（Issue #3）', () => {
     }
   });
 
-  it('buildClaudeArgv：new / resume 参数数组正确', () => {
-    expect(buildClaudeArgv(makeSpec(), CLAUDE_BIN)).toEqual([
-      CLAUDE_BIN,
-      '--session-id',
-      '11111111-2222-3333-4444-555555555555',
-      '--name',
-      'MFP · REQ-x',
-    ]);
+  it('buildClaudeArgv：new（自然会话无 id flag）/ resume 参数数组正确', () => {
+    expect(buildClaudeArgv(makeSpec(), CLAUDE_BIN)).toEqual([CLAUDE_BIN, '--name', 'MFP · REQ-x']);
     expect(buildClaudeArgv(makeSpec({ mode: 'resume', resumeSessionId: 'abc' }), CLAUDE_BIN)).toEqual([
       CLAUDE_BIN,
       '--resume',

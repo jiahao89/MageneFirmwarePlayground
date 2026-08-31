@@ -129,17 +129,17 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     }
   });
 
-  it('startSession(new)：-p 种子建立会话，终端用 --resume 接续（F-2 修复）', async () => {
+  it('startSession(new)：首轮 -p headless 执行启动指令，sessionId 来自信封（发布修复 v2）', async () => {
     process.env.FAKE_CLAUDE_SESSION_ID = 'seeded-sid-0001';
     try {
       const { adapter, plans } = makeAdapter();
       const spec = makeSpec({ mode: 'new' });
       const result = await adapter.startSession(spec);
-      // sessionId 来自 -p 信封（已落盘、可被 --resume 找到），而非生成的 spec.sessionId
+      // sessionId 来自 -p envelope（transcript 已落盘，后续 --resume 可接续）
       expect(result.sessionId).toBe('seeded-sid-0001');
       expect(result.fallback).toBe(false);
       expect(plans).toHaveLength(1);
-      // 终端命令以 --resume <种子会话> 接续交互（不再用 --session-id）
+      // 首轮已完成：终端以 resume 模式挂载同一会话，供 PM 查看与介入
       expect(plans[0].mode).toBe('resume');
       expect(plans[0].resumeSessionId).toBe('seeded-sid-0001');
       expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('AGENTS.md');
@@ -148,14 +148,14 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     }
   });
 
-  it('startSession(new)：种子阶段认证失败 → 打开终端前抛 CLI_AUTH_FAILED', async () => {
+  it('startSession(new)：首轮认证失败 → 抛 CLI_AUTH_FAILED，不打开终端', async () => {
     process.env.FAKE_CLAUDE_AUTH_FAIL = '1';
     try {
       const { adapter, plans } = makeAdapter();
       await expect(adapter.startSession(makeSpec({ mode: 'new' }))).rejects.toMatchObject({
         payload: expect.objectContaining({ code: 'CLI_AUTH_FAILED' }),
       });
-      expect(plans).toHaveLength(0); // 终端未被打开
+      expect(plans).toHaveLength(0); // 终端未打开
     } finally {
       delete process.env.FAKE_CLAUDE_AUTH_FAIL;
     }
@@ -175,32 +175,27 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     expect(result.fallback).toBe(false);
   });
 
-  it('startSession(resume)：会话文件缺失 → 降级为种子新会话（基于工作包）', async () => {
-    process.env.FAKE_CLAUDE_SESSION_ID = 'seeded-sid-0002';
-    try {
-      const { adapter } = makeAdapter();
-      const cwd = path.join(tmp, 'mfp-root-2');
-      const spec = makeSpec({
-        mode: 'resume',
-        resumeSessionId: 'missing-session-id',
-        cwd,
-        sessionId: 'new-fallback-id',
-        startupInstruction: '（降级启动指令）请从工作包续接。',
-      });
-      const result = await adapter.startSession(spec);
-      expect(result.sessionId).toBe('seeded-sid-0002'); // 降级 = 种子建立的新会话
-      expect(result.fallback).toBe(true);
-      expect(result.lastError?.code).toBe('SESSION_NOT_FOUND');
-      // 降级时启动文件使用降级指令
-      expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('降级启动指令');
-    } finally {
-      delete process.env.FAKE_CLAUDE_SESSION_ID;
-    }
+  it('startSession(resume)：会话文件缺失 → 降级为新会话（首轮 headless，基于工作包）', async () => {
+    const { adapter } = makeAdapter();
+    const cwd = path.join(tmp, 'mfp-root-2');
+    const spec = makeSpec({
+      mode: 'resume',
+      resumeSessionId: 'missing-session-id',
+      cwd,
+      sessionId: 'new-fallback-id',
+      startupInstruction: '（降级启动指令）请从工作包续接。',
+    });
+    const result = await adapter.startSession(spec);
+    expect(result.sessionId).toBe('fake-session-0001'); // 降级 = 首轮 headless 产生的新会话
+    expect(result.fallback).toBe(true);
+    expect(result.lastError?.code).toBe('SESSION_NOT_FOUND');
+    // 降级时启动文件使用降级指令
+    expect(fs.readFileSync(spec.startupFile, 'utf8')).toContain('降级启动指令');
   });
 
   it('会话元数据不含任何凭据字段（不保存 API key）', async () => {
     const { adapter } = makeAdapter();
-    const result = await adapter.startSession(makeSpec({ mode: 'new' }));
+    const result = await adapter.startSession(makeSpec({ mode: 'new', cwd: path.join(tmp, 'mfp-root-cred') }));
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(/api[_ -]?key|token|secret|credential/i);
     // note/lastError 仅降级时出现；此处应只有受控键，且无任何凭据键

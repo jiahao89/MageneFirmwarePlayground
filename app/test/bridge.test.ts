@@ -63,13 +63,14 @@ describe('文件桥接契约（Issue #2）', () => {
     await expect(bridge.register(wp.requestId)).rejects.toThrow(/非法状态迁移/);
   });
 
-  it('重复 launch 抛 CONCURRENT_RUN', async () => {
+  it('重复 launch 被拒绝（首轮完成后由状态机拦截 processing → processing）', async () => {
     const { bridge } = makeBridge();
     const wp0 = await bridge.saveRawInput({ text: '希望支持 ANT+ 车灯自动开关' });
     await bridge.recognize(wp0.requestId);
     await bridge.register(wp0.requestId);
     await bridge.launch(wp0.requestId);
-    await expect(bridge.launch(wp0.requestId)).rejects.toThrow(/运行/);
+    // v2：守卫只保护在途调用；首轮已完成后，重复启动由状态机拒绝（继续走 resume）
+    await expect(bridge.launch(wp0.requestId)).rejects.toThrow(/非法状态迁移/);
   });
 
   it('完整状态流：启动 → Agent 写问题 → PM 回答 → Agent 写 PRD → PM 完成', async () => {

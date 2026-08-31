@@ -43,10 +43,16 @@ export interface ClaudeCliAdapterOptions {
   launch?: typeof executeLaunchPlan;
   /** 认证探测超时（默认 60s）。 */
   authProbeTimeoutMs?: number;
-  /** 会话种子调用超时（默认 90s：一次最小 -p 调用）。 */
-  seedTimeoutMs?: number;
-  /** 识别超时（默认 300s：识别属于真实模型调用）。 */
+  /** 首轮超时后等待 transcript 落盘的兜底发现超时（默认 20s；测试可调短）。 */
+  discoverTimeoutMs?: number;
+  /** 识别超时（默认 300s：单次模型调用，无工具循环）。 */
   recognizeTimeoutMs?: number;
+  /**
+   * Agent 轮超时（默认 900s）：首轮与继续轮是完整 Agent 循环（读规则/
+   * 工作包/事实源 + 多次工具调用 + 写回），实测首轮约 5 分钟以上，
+   * 必须显著长于识别超时（发布验证：300s 会在 Agent 写回中途被 kill）。
+   */
+  agentTurnTimeoutMs?: number;
 }
 
 /** 识别提示词：要求只输出符合 RecognitionResult 结构的 JSON。 */
@@ -129,8 +135,9 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
   private readonly terminalApp?: string;
   private readonly launch: typeof executeLaunchPlan;
   private readonly authProbeTimeoutMs: number;
-  private readonly seedTimeoutMs: number;
+  private readonly discoverTimeoutMs: number;
   private readonly recognizeTimeoutMs: number;
+  private readonly agentTurnTimeoutMs: number;
 
   constructor(opts?: ClaudeCliAdapterOptions) {
     this.cliPath = opts?.cliPath ?? 'claude';
@@ -140,8 +147,9 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
     this.terminalApp = opts?.terminalApp;
     this.launch = opts?.launch ?? executeLaunchPlan;
     this.authProbeTimeoutMs = opts?.authProbeTimeoutMs ?? 60_000;
-    this.seedTimeoutMs = opts?.seedTimeoutMs ?? 90_000;
+    this.discoverTimeoutMs = opts?.discoverTimeoutMs ?? 20_000;
     this.recognizeTimeoutMs = opts?.recognizeTimeoutMs ?? 300_000;
+    this.agentTurnTimeoutMs = opts?.agentTurnTimeoutMs ?? 900_000;
   }
 
   async checkAvailability(): Promise<CliAvailability> {
@@ -226,7 +234,9 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
     if (spec.mode === 'resume' && spec.resumeSessionId) {
       const sessionFile = this.sessionFilePath(spec.resumeSessionId, spec.cwd);
       if (fs.existsSync(sessionFile)) {
-        // 会话文件存在：transcript 已落盘，--resume 可直接恢复。
+        // 会话文件存在：先跑「继续轮」（headless，让 Agent 读到 PM 的新回答/
+        // 修改意见并推进到下一暂停点），再打开终端供 PM 查看与介入。
+        await this.runContinueTurn(bin, spec.resumeSessionId, spec.cwd);
       } else {
         // resume 失败 → 基于工作包创建新会话（启动指令已由桥接层换成降级版）。
         fallback = true;
@@ -236,38 +246,79 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
       }
     }
 
-    let sessionId: string;
-    if (resumeSessionId) {
-      sessionId = resumeSessionId;
-    } else {
-      // 新建会话（Issue #6 验收 F-2 修复）：claude 2.1.229 中交互模式 + --session-id
-      // 的 transcript 不落盘，--resume 会报 "No conversation found"（实测）。
-      // 改为：先用一次最小 -p 调用建立会话（envelope.session_id 真实落盘，
-      // 已实测验证），再在终端用 --resume 接续交互并处理启动指令。
-      sessionId = await this.seedConversation(bin, spec);
-    }
-
-    // 启动指令写入受控文件；终端命令只引用文件路径，不内联长文本。
+    // 启动指令写入受控文件（审计留痕）；终端命令只引用文件路径，不内联长文本。
     fs.mkdirSync(path.dirname(spec.startupFile), { recursive: true });
     fs.writeFileSync(spec.startupFile, spec.startupInstruction, 'utf8');
 
-    await this.launch(this.platform, { ...spec, mode: 'resume', resumeSessionId: sessionId }, bin, this.launcherOptions());
+    if (resumeSessionId) {
+      // 单终端策略：已有进程挂载该会话（此前打开的终端）则不再重复打开，
+      // 避免多个 claude 进程并发续跑同一会话（发布验证实测）。PM 关闭旧终端
+      // 后再次 resume 会重新打开，获得包含最新 headless 轮的完整视图。
+      if (!(await this.sessionProcessAlive(resumeSessionId))) {
+        await this.launch(this.platform, { ...spec, mode: 'resume', resumeSessionId }, bin, this.launcherOptions());
+      }
+      return { sessionId: resumeSessionId, fallback, note, lastError };
+    }
 
+    // 新建会话（Issue #6 发布验证 v2）：首轮即 headless。
+    //  - 交互模式（无论 --session-id / --name / 位置参数如何组合）在 claude 2.1.229
+    //    中 transcript 均不落盘（实测：带位置参数的交互会话功能正常但永不持久化，
+    //    会话不可恢复）；只有 -p 调用的 transcript 稳定落盘且 --resume 可接续（实测）。
+    //  - 因此首轮用 -p 直接执行完整启动指令：Agent 真实读取工作包并写回澄清问题/
+    //    产出，envelope.session_id 即真实 sessionId；
+    //  - 之后终端仅以 --resume 挂载同一会话，供 PM 查看与介入（交互 resume 会话
+    //    正常持久化，实测）。
+    const before = this.listSessionFiles(spec.cwd);
+    let sessionId: string;
+    try {
+      sessionId = await this.runFirstTurn(bin, spec);
+    } catch (e) {
+      // 仅超时走兜底：transcript 可能已落盘（runProcess 超时会 kill 子进程），
+      // 按 requestId 标记从新增会话文件中恢复 sessionId，会话仍可接续。
+      // 认证 / CLI / 输出错误立即上抛（终端不打开）。
+      if (!(e instanceof BridgeError) || e.payload?.code !== 'CLI_TIMEOUT') throw e;
+      const discovered = await this.discoverSessionId(spec.cwd, before, this.discoveryMarker(spec));
+      if (!discovered) throw e;
+      sessionId = discovered;
+      note = note ?? '首轮指令未在超时内完成，已从落盘会话文件恢复会话标识；Agent 可能处于中间状态，请检查工作包';
+    }
+
+    await this.launch(this.platform, { ...spec, mode: 'resume', resumeSessionId: sessionId }, bin, this.launcherOptions());
     return { sessionId, fallback, note, lastError };
   }
 
   /**
-   * 用最小 `-p` 调用建立可恢复的会话，返回真实（已落盘）的 session id。
-   * 种子提示只含受控文本（sessionName 由 requestId 派生），不含用户原文；
-   * 认证 / CLI 错误在此提前暴露（打开终端之前）。
+   * 会话进程存活探测（单终端策略用）：匹配命令行同时含 claude 与 sessionId
+   * 的进程（此前打开的终端）。headless 轮结束后 -p 进程已退出，正常只匹配终端。
+   * Windows 真机验证前保守返回 false（总是开终端）。
    */
-  private async seedConversation(bin: string, spec: StartSessionSpec): Promise<string> {
+  private async sessionProcessAlive(sessionId: string): Promise<boolean> {
+    if (this.platform === 'win32') return false;
+    try {
+      const res = await runProcess({
+        command: 'pgrep',
+        args: ['-f', `claude.*${sessionId}`],
+        cwd: this.homeDir,
+        timeoutMs: 5_000,
+      });
+      return res.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 首轮：headless 执行完整启动指令，返回真实（已落盘）的 session id。
+   * 指令为受控模板（含 requestId 派生内容），经 stdin 传入，不进命令行；
+   * 认证 / CLI 错误在打开终端之前暴露。
+   */
+  private async runFirstTurn(bin: string, spec: StartSessionSpec): Promise<string> {
     const res = await runProcess({
       command: bin,
       args: ['-p', '--output-format', 'json'],
       cwd: spec.cwd,
-      input: `MFP 会话初始化锚点（${spec.sessionName}）。请只回复四个字：已就绪。不要使用任何工具。`,
-      timeoutMs: this.seedTimeoutMs,
+      input: spec.startupInstruction,
+      timeoutMs: this.agentTurnTimeoutMs,
     });
     if (res.code !== 0) {
       const combined = `${res.stdout}\n${res.stderr}`;
@@ -284,6 +335,84 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
       throw new BridgeError('MALFORMED_OUTPUT', '启动会话失败：会话信封缺少 session_id');
     }
     return envelope.session_id;
+  }
+
+  /** 发现标记：sessionName「MFP · REQ-x」中的 requestId（启动指令文本必含，受控派生）。 */
+  private discoveryMarker(spec: StartSessionSpec): string {
+    const parts = spec.sessionName.split('·');
+    const requestId = parts[parts.length - 1]?.trim();
+    return requestId && requestId.length > 0 ? requestId : spec.sessionName;
+  }
+
+  /** 继续轮：headless 推进既有会话到下一暂停点（提示为受控模板，不含用户原文）。 */
+  private async runContinueTurn(bin: string, sessionId: string, cwd: string): Promise<void> {
+    const prompt = [
+      'MFP 工作台继续指令：PM 已在 Web 端更新了澄清问题回答或修改意见。',
+      '请重新读取当前目录下工作包 JSON（.mfp/work/ 对应文件）中的最新内容，',
+      '按任务卡（taskCard）继续工作，直到下一个暂停点（新澄清问题 / 待审阅产出 / 完成），',
+      '把结果写回工作包后停止。不要询问确认，直接执行。',
+    ].join('\n');
+    const res = await runProcess({
+      command: bin,
+      args: ['-p', '--output-format', 'json', '--resume', sessionId],
+      cwd,
+      input: prompt,
+      timeoutMs: this.agentTurnTimeoutMs,
+    });
+    if (res.code !== 0) {
+      const combined = `${res.stdout}\n${res.stderr}`;
+      if (looksLikeAuthError(combined)) {
+        throw new BridgeError('CLI_AUTH_FAILED', `恢复会话失败：Claude Code 认证错误（${firstLine(res.stderr)}）`);
+      }
+      throw new BridgeError('MALFORMED_OUTPUT', `恢复会话失败（exit ${res.code}）：${firstLine(res.stderr)}`);
+    }
+  }
+
+  /** 列出当前 cwd 对应 projects 目录下已有的会话文件（首轮前快照，兜底发现用）。 */
+  private listSessionFiles(cwd: string): Set<string> {
+    const dir = this.projectsDir(cwd);
+    try {
+      return new Set(fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')));
+    } catch {
+      return new Set();
+    }
+  }
+
+  /** 轮询发现首轮后新增的会话文件；内容须含 requestId 标记以精确匹配（兜底路径）。 */
+  private async discoverSessionId(cwd: string, before: Set<string>, marker: string): Promise<string | undefined> {
+    const dir = this.projectsDir(cwd);
+    const deadline = Date.now() + this.discoverTimeoutMs;
+    while (Date.now() < deadline) {
+      await sleep(500);
+      try {
+        const candidates = fs.readdirSync(dir)
+          .filter((f) => f.endsWith('.jsonl') && !before.has(f))
+          .map((f) => ({ file: f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+        for (const candidate of candidates) {
+          try {
+            // sessionName 可能写在 transcript 后段；只读尾部避免在大文件上全量扫描。
+            const full = path.join(dir, candidate.file);
+            const stat = fs.statSync(full);
+            const fd = fs.openSync(full, 'r');
+            const size = Math.min(stat.size, 256 * 1024);
+            const buffer = Buffer.alloc(size);
+            fs.readSync(fd, buffer, 0, size, Math.max(0, stat.size - size));
+            fs.closeSync(fd);
+            if (buffer.toString('utf8').includes(marker)) return candidate.file.replace(/\.jsonl$/, '');
+          } catch {
+            /* 文件正在写入，跳过 */
+          }
+        }
+      } catch {
+        /* 目录尚未创建，继续轮询 */
+      }
+    }
+    return undefined;
+  }
+
+  private projectsDir(cwd: string): string {
+    return path.join(this.homeDir, '.claude', 'projects', sanitizeProjectDir(cwd));
   }
 
   /** 会话文件路径：~/.claude/projects/<cwd 非字母数字转 ->/<uuid>.jsonl。 */
@@ -338,4 +467,8 @@ function extractErrorText(envelope: ClaudeResultEnvelope, fallback: string): str
 
 function firstLine(text: string): string {
   return (text ?? '').trim().split('\n')[0]?.trim() ?? '';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

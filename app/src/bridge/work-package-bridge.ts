@@ -16,6 +16,7 @@ import type {
   LaunchResult,
   PreflightResult,
   RevisionComment,
+  SessionMetadata,
 } from './types';
 
 // ============================================================================
@@ -148,59 +149,64 @@ export class WorkPackageBridge implements MfpBridge {
     try {
       assertTransition(wp.status, 'processing', 'launch（PM 启动）');
       const outcome = await this.sessions.startNew(wp);
-      const startedAt = this.now();
-      wp.status = 'processing';
-      wp.session = {
-        sessionId: outcome.sessionId,
-        cliVersion: outcome.cliVersion,
-        processState: 'running',
-        startedAt,
-        lastError: outcome.lastError,
-      };
-      this.seq += 1;
-      wp.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
-      wp.updatedAt = this.now();
-      await this.store.save(wp);
-      return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
-    } catch (e) {
+      return await this.saveAfterAgentTurn(requestId, outcome, 'launch');
+    } finally {
+      // v2 会话模型：首轮为有界的 headless 轮，调用返回即结束；守卫只保护
+      // 在途调用（防止并发双跑），不跨轮持有——否则后续 resume 会被误判
+      // 「已在运行」而跳过继续轮（发布验证修复）。
       this.runGuard.release(requestId);
-      throw e;
     }
   }
 
   async resume(requestId: string): Promise<LaunchResult> {
     const wp = await this.loadRequired(requestId);
-    // 同一应用会话内已在运行 → 直接返回既有会话（防止重复开终端）。
-    // 应用重启后内存守卫为空，resume 会真正走适配器恢复已保存会话。
-    if (this.runGuard.isRunning(requestId) && wp.session.sessionId) {
-      return { ok: true, sessionId: wp.session.sessionId, startedAt: wp.session.startedAt };
-    }
     this.runGuard.acquire(requestId, this.now);
     try {
       // 会话恢复是会话层操作：仅当需求尚在「待启动」时才迁移到「处理中」；
       // 其余状态（如处理中 / 待回答）保持不变，只更新会话元数据。
+      // v2：每次 resume 都真实执行继续轮（headless 推进 + 终端挂载最新状态），
+      // 不做「已运行即早退」——首轮结束后进程即退出，早退会卡死「回答后继续」。
       if (wp.status === 'pending_launch') {
         assertTransition(wp.status, 'processing', 'resume（PM 恢复会话）');
         wp.status = 'processing';
       }
       const outcome = await this.sessions.resume(wp);
-      const startedAt = this.now();
-      wp.session = {
-        sessionId: outcome.sessionId,
-        cliVersion: outcome.cliVersion,
-        processState: 'running',
-        startedAt,
-        lastError: outcome.lastError,
-      };
-      this.seq += 1;
-      wp.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
-      wp.updatedAt = this.now();
-      await this.store.save(wp);
-      return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
-    } catch (e) {
+      return await this.saveAfterAgentTurn(requestId, outcome, 'resume');
+    } finally {
       this.runGuard.release(requestId);
-      throw e;
     }
+  }
+
+  /**
+   * Agent 轮结束后的落盘（发布验证修复）：
+   * Agent 会直接编辑磁盘上的工作包文件（澄清问题 / 任务卡 / PRD 状态），
+   * 因此必须重读磁盘最新内容，只叠加桥接层拥有的会话元数据与运行日志，
+   * 绝不能把轮前内存副本整包写回（否则覆盖 Agent 写回）。
+   * launch 语义：状态仅在 Agent 未推进时置为 processing；Agent 已推进
+   * （如 pending_answer）则尊重其结果。
+   */
+  private async saveAfterAgentTurn(
+    requestId: string,
+    outcome: { sessionId: string; cliVersion?: string; fallback?: boolean; note?: string; lastError?: { code: string; message: string } },
+    source: 'launch' | 'resume',
+  ): Promise<LaunchResult> {
+    const fresh = await this.loadRequired(requestId);
+    if (fresh.status === 'pending_launch') {
+      fresh.status = 'processing'; // 轮前 assertTransition 已校验迁移合法性（launch/resume 同）
+    }
+    const startedAt = this.now();
+    fresh.session = {
+      sessionId: outcome.sessionId,
+      cliVersion: outcome.cliVersion,
+      processState: 'running',
+      startedAt,
+      lastError: outcome.lastError as SessionMetadata['lastError'],
+    };
+    this.seq += 1;
+    fresh.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
+    fresh.updatedAt = this.now();
+    await this.store.save(fresh);
+    return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
   }
 
   async listWorkPackages(): Promise<WorkPackage[]> {

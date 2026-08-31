@@ -54,7 +54,14 @@ if (args.includes('--version')) {
     process.exit(0);
   });
 } else {
-  // 其余参数（交互会话等）：fake 二进制不真正启动，直接成功。
-  process.stdout.write('fake claude: interactive session not supported in fixture');
-  process.exit(0);
+  // 其余参数（含 --resume 继续轮等）：消费 stdin 后成功退出（避免调用方 EPIPE）。
+  let stdin = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (d) => (stdin += d));
+  process.stdin.on('end', () => {
+    process.stdout.write('fake claude: handled');
+    process.exit(0);
+  });
+  // stdin 立即关闭时也要退出
+  setTimeout(() => process.exit(0), 2000);
 }
