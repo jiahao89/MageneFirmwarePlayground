@@ -36,6 +36,7 @@ export {
   parseClaudeVersion,
   sanitizeProjectDir,
   resolveBinaryPath,
+  claudeFallbackCandidates,
   parseEnvelopeToRecognition,
   stripCodeFence,
 } from './claude-cli-adapter';

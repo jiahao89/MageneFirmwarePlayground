@@ -11,6 +11,7 @@ import {
   looksLikeAuthError,
   sanitizeProjectDir,
   buildRecognitionPrompt,
+  claudeFallbackCandidates,
   BridgeError,
 } from '../src/bridge/node';
 import type { LaunchPlan, StartSessionSpec } from '../src/bridge/node';
@@ -78,6 +79,26 @@ describe('ClaudeCliAdapter（Issue #3）', () => {
     const availability = await adapter.checkAvailability();
     expect(availability.installed).toBe(false);
     await expect(adapter.recognize({ rawInputId: 'r', text: 'x', createdAt: 't' })).rejects.toThrowError(BridgeError);
+  });
+
+  it('双击启动场景：PATH 无 claude → 回退常见安装位置（~/.claude/local/claude）', async () => {
+    // 模拟 Finder 双击：GUI 应用 PATH 为系统最小集，Homebrew 不在其中
+    const localDir = path.join(homeDir, '.claude', 'local');
+    fs.mkdirSync(localDir, { recursive: true });
+    const localClaude = path.join(localDir, 'claude');
+    fs.writeFileSync(localClaude, `#!/bin/sh\necho '2.1.229 (Claude Code)'\n`, 'utf8');
+    fs.chmodSync(localClaude, 0o755);
+    const saved = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    try {
+      const adapter = new ClaudeCliAdapter({ homeDir }); // 裸命令名 'claude'
+      const availability = await adapter.checkAvailability();
+      expect(availability.installed).toBe(true);
+      // 命中任一回退候选即可（真机若装有 Homebrew claude 会优先命中系统路径）
+      expect(claudeFallbackCandidates(homeDir, 'darwin')).toContain(availability.path);
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 
   it('认证探测成功', async () => {
@@ -245,6 +266,14 @@ describe('纯函数：版本/信封/错误分类', () => {
   it('sanitizeProjectDir 与 Claude Code 会话目录规则一致', () => {
     expect(sanitizeProjectDir('/Users/jacko/Projects/MFP')).toBe('-Users-jacko-Projects-MFP');
     expect(sanitizeProjectDir('/a b/c.d')).toBe('-a-b-c-d');
+  });
+
+  it('claudeFallbackCandidates：darwin 覆盖 Homebrew/官方/本地安装，win32 为空（真机验证另做）', () => {
+    const darwin = claudeFallbackCandidates('/Users/tester', 'darwin');
+    expect(darwin).toContain('/opt/homebrew/bin/claude');
+    expect(darwin).toContain('/usr/local/bin/claude');
+    expect(darwin).toContain('/Users/tester/.claude/local/claude');
+    expect(claudeFallbackCandidates('/Users/tester', 'win32')).toEqual([]);
   });
 
   it('buildRecognitionPrompt 包含 schema 字段与原文', () => {

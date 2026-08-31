@@ -119,6 +119,33 @@ export function resolveBinaryPath(cliPath: string, pathEnv: string, platform: 'd
   return undefined;
 }
 
+/**
+ * claude 常见安装位置（发布候选验证修复）：
+ * Finder/Dock 双击启动的 .app 进程 PATH 为系统最小集（launchctl getenv PATH
+ * 为空，Homebrew 前缀不在其中），bridge 子进程继承该环境导致 PATH 扫描失败；
+ * 按 Homebrew / 官方安装器常见位置回退。win32 维持 PATH-only（真机验证另做）。
+ */
+export function claudeFallbackCandidates(homeDir: string, platform: 'darwin' | 'win32'): string[] {
+  if (platform === 'win32') return [];
+  return [
+    '/opt/homebrew/bin/claude', // Apple Silicon Homebrew
+    '/usr/local/bin/claude', // Intel Homebrew / 官方pkg
+    path.join(homeDir, '.claude', 'local', 'claude'), // claude install 本地安装
+  ];
+}
+
+function firstExistingExecutable(paths: string[]): string | undefined {
+  for (const p of paths) {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return p;
+    } catch {
+      /* continue */
+    }
+  }
+  return undefined;
+}
+
 interface ClaudeResultEnvelope {
   type?: string;
   subtype?: string;
@@ -424,9 +451,13 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
     return this.terminalApp ? { terminalApp: this.terminalApp } : {};
   }
 
-  /** 在 PATH 中查找 claude 可执行文件；找不到返回 undefined。 */
+  /** 在 PATH 中查找 claude 可执行文件；裸命令名失败时回退常见安装位置（双击启动场景）。 */
   private findBinary(): string | undefined {
-    return resolveBinaryPath(this.cliPath, process.env.PATH ?? '', this.platform);
+    const viaPath = resolveBinaryPath(this.cliPath, process.env.PATH ?? '', this.platform);
+    if (viaPath) return viaPath;
+    // 显式指定的路径不存在 → 尊重调用方意图，不做回退（测试注入缺失 CLI 依赖此语义）
+    if (this.cliPath.includes('/') || this.cliPath.includes('\\')) return undefined;
+    return firstExistingExecutable(claudeFallbackCandidates(this.homeDir, this.platform));
   }
 }
 

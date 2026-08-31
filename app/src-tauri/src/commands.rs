@@ -77,6 +77,20 @@ fn spawn_bridge_client(resource_dir: Option<&Path>) -> Result<BridgeClient, Stri
     BridgeClient::spawn(&node, &script, &root, &adapter, terminal.as_deref())
 }
 
+/// node 常见安装位置（发布候选验证修复）：
+/// Finder/Dock 双击启动的 GUI 应用 PATH 为系统最小集（`launchctl getenv PATH`
+/// 为空，Homebrew 前缀不在其中），PATH 扫描失败时按序回退这些绝对路径。
+pub fn node_fallback_candidates() -> Vec<PathBuf> {
+    if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/bin/node"), // Apple Silicon Homebrew
+            PathBuf::from("/usr/local/bin/node"),    // Intel Homebrew / 官方pkg
+        ]
+    } else {
+        vec![]
+    }
+}
+
 fn resolve_node() -> Result<String, String> {
     if let Ok(p) = std::env::var("MFP_NODE") {
         if !p.trim().is_empty() && Path::new(&p).is_file() {
@@ -89,11 +103,19 @@ fn resolve_node() -> Result<String, String> {
         &["node"]
     };
     let path_env = std::env::var("PATH").unwrap_or_default();
-    find_in_path(&path_env, names)
+    let found = find_in_path(&path_env, names)
         .map(|p| p.to_string_lossy().to_string())
-        .ok_or_else(|| {
-            "未找到 node 可执行文件：请安装 Node.js，或通过 MFP_NODE 环境变量指定路径".to_string()
-        })
+        .or_else(|| first_existing(&node_fallback_candidates()));
+    found.ok_or_else(|| {
+        "未找到 node 可执行文件：请安装 Node.js，或通过 MFP_NODE 环境变量指定路径".to_string()
+    })
+}
+
+fn first_existing(candidates: &[PathBuf]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|c| c.is_file())
+        .map(|c| c.display().to_string())
 }
 
 fn resolve_script(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
@@ -191,4 +213,32 @@ pub fn complete(state: State<'_, AppState>, request_id: String) -> Result<Value,
 #[tauri::command]
 pub fn archive(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
     state.call("archive", json!({ "requestId": request_id }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_fallback_candidates_cover_homebrew_prefixes() {
+        let candidates = node_fallback_candidates();
+        if cfg!(target_os = "macos") {
+            assert!(candidates.contains(&PathBuf::from("/opt/homebrew/bin/node")));
+            assert!(candidates.contains(&PathBuf::from("/usr/local/bin/node")));
+        }
+    }
+
+    #[test]
+    fn first_existing_picks_only_existing_file() {
+        let dir = std::env::temp_dir().join(format!("mfp-node-fallback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("node");
+        std::fs::write(&existing, "#!/bin/sh\n").unwrap();
+        assert_eq!(
+            first_existing(&[dir.join("missing"), existing.clone()]),
+            Some(existing.display().to_string())
+        );
+        assert_eq!(first_existing(&[]), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
