@@ -68,7 +68,10 @@ fn spawn_bridge_client(resource_dir: Option<&Path>) -> Result<BridgeClient, Stri
     let node = resolve_node()?;
     let script = resolve_script(resource_dir)?;
     let cwd = std::env::current_dir().map_err(|e| format!("无法获取当前目录：{}", e))?;
-    let root = resolve_root(std::env::var("MFP_ROOT").ok().as_deref(), &cwd)?;
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|h| PathBuf::from(h));
+    let root = resolve_root(std::env::var("MFP_ROOT").ok().as_deref(), &cwd, home.as_deref())?;
     let adapter = std::env::var("MFP_ADAPTER").unwrap_or_else(|_| "claude".to_string());
     let terminal = std::env::var("MFP_TERMINAL_APP").ok();
     BridgeClient::spawn(&node, &script, &root, &adapter, terminal.as_deref())

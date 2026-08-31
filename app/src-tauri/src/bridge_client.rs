@@ -190,18 +190,52 @@ pub fn server_script_candidates(cwd: &Path, exe_dir: Option<&Path>, resource_dir
     v
 }
 
-/// MFP 根目录：优先显式值（env MFP_ROOT），否则当前工作目录；目录必须存在。
-pub fn resolve_root(env_root: Option<&str>, cwd: &Path) -> Result<String, String> {
-    let root = match env_root {
-        Some(r) if !r.trim().is_empty() => PathBuf::from(r),
-        _ => cwd.to_path_buf(),
-    };
-    if !root.is_dir() {
-        return Err(format!("MFP 根目录不存在：{}", root.display()));
+/// 仓库标记：MFP 根目录须同时含 AGENTS.md 与 knowledge-base/（防误选任意目录）。
+fn is_mfp_root(p: &Path) -> bool {
+    p.join("AGENTS.md").is_file() && p.join("knowledge-base").is_dir()
+}
+
+/// MFP 根目录解析（发布验证修复）：
+/// 1. env MFP_ROOT（dev / 自定义部署；显式指定仅要求目录存在）
+/// 2. 当前工作目录（dev 模式：须含仓库标记）
+/// 3. 默认安装位置 `<home>/Projects/MageneFirmwarePlayground`
+///    （打包 .app 经 Finder/Dock 启动时 cwd=/，必须回退到固定位置；须含标记）
+/// 全部失败时报错并列出已尝试候选。
+pub fn resolve_root(env_root: Option<&str>, cwd: &Path, home: Option<&Path>) -> Result<String, String> {
+    if let Some(r) = env_root {
+        if !r.trim().is_empty() {
+            let p = PathBuf::from(r);
+            if !p.is_dir() {
+                return Err(format!("MFP 根目录不存在：{}", p.display()));
+            }
+            return p
+                .to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "MFP 根目录路径不是合法 UTF-8".to_string());
+        }
     }
-    root.to_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "MFP 根目录路径不是合法 UTF-8".to_string())
+    let mut tried: Vec<String> = Vec::new();
+    if is_mfp_root(cwd) {
+        return cwd
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "MFP 根目录路径不是合法 UTF-8".to_string());
+    }
+    tried.push(cwd.display().to_string());
+    if let Some(h) = home {
+        let default = h.join("Projects").join("MageneFirmwarePlayground");
+        if is_mfp_root(&default) {
+            return default
+                .to_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "MFP 根目录路径不是合法 UTF-8".to_string());
+        }
+        tried.push(default.display().to_string());
+    }
+    Err(format!(
+        "无法定位 MFP 根目录（尝试过：{}）。请通过 MFP_ROOT 环境变量指定。",
+        tried.join("；")
+    ))
 }
 
 #[cfg(test)]
@@ -330,10 +364,41 @@ mod tests {
     fn resolve_root_prefers_env_and_requires_dir() {
         let dir = std::env::temp_dir().join(format!("mfp-rust-root-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let got = resolve_root(Some(dir.to_str().unwrap()), Path::new("/nowhere")).unwrap();
+        // 显式 env root：仅要求目录存在，不要求仓库标记
+        let got = resolve_root(Some(dir.to_str().unwrap()), Path::new("/nowhere"), None).unwrap();
         assert_eq!(got, dir.to_str().unwrap());
-        assert!(resolve_root(Some("/definitely/not/here"), Path::new("/nowhere")).is_err());
-        assert!(resolve_root(None, &dir).is_ok());
+        assert!(resolve_root(Some("/definitely/not/here"), Path::new("/nowhere"), None).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_root_cwd_requires_repo_markers() {
+        // 无标记的 cwd 不被接受（发布验证：打包 .app 的 cwd=/ 不能成为根目录）
+        let plain = std::env::temp_dir().join(format!("mfp-rust-plain-{}", std::process::id()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(resolve_root(None, &plain, None).is_err());
+        // 含标记（AGENTS.md + knowledge-base/）的 cwd 被接受
+        std::fs::write(plain.join("AGENTS.md"), "# AGENTS").unwrap();
+        std::fs::create_dir_all(plain.join("knowledge-base")).unwrap();
+        assert!(resolve_root(None, &plain, None).is_ok());
+        std::fs::remove_dir_all(&plain).unwrap();
+    }
+
+    #[test]
+    fn resolve_root_falls_back_to_home_default() {
+        // cwd 无标记 → 回退 <home>/Projects/MageneFirmwarePlayground（含标记才接受）
+        let home = std::env::temp_dir().join(format!("mfp-rust-home-{}", std::process::id()));
+        let default_root = home.join("Projects").join("MageneFirmwarePlayground");
+        std::fs::create_dir_all(default_root.join("knowledge-base")).unwrap();
+        std::fs::write(default_root.join("AGENTS.md"), "# AGENTS").unwrap();
+        let got = resolve_root(None, Path::new("/"), Some(&home)).unwrap();
+        assert_eq!(got, default_root.to_str().unwrap());
+        // home 默认位置无标记 → 报错并列出候选
+        let empty_home = std::env::temp_dir().join(format!("mfp-rust-emptyhome-{}", std::process::id()));
+        std::fs::create_dir_all(&empty_home).unwrap();
+        let err = resolve_root(None, Path::new("/"), Some(&empty_home)).unwrap_err();
+        assert!(err.contains("MFP_ROOT"));
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::remove_dir_all(&empty_home).unwrap();
     }
 }

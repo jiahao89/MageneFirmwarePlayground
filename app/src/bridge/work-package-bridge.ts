@@ -149,7 +149,7 @@ export class WorkPackageBridge implements MfpBridge {
     try {
       assertTransition(wp.status, 'processing', 'launch（PM 启动）');
       const outcome = await this.sessions.startNew(wp);
-      return await this.saveAfterAgentTurn(requestId, outcome, 'launch');
+      return await this.saveAfterAgentTurn(requestId, outcome);
     } finally {
       // v2 会话模型：首轮为有界的 headless 轮，调用返回即结束；守卫只保护
       // 在途调用（防止并发双跑），不跨轮持有——否则后续 resume 会被误判
@@ -171,7 +171,7 @@ export class WorkPackageBridge implements MfpBridge {
         wp.status = 'processing';
       }
       const outcome = await this.sessions.resume(wp);
-      return await this.saveAfterAgentTurn(requestId, outcome, 'resume');
+      return await this.saveAfterAgentTurn(requestId, outcome);
     } finally {
       this.runGuard.release(requestId);
     }
@@ -188,7 +188,6 @@ export class WorkPackageBridge implements MfpBridge {
   private async saveAfterAgentTurn(
     requestId: string,
     outcome: { sessionId: string; cliVersion?: string; fallback?: boolean; note?: string; lastError?: { code: string; message: string } },
-    source: 'launch' | 'resume',
   ): Promise<LaunchResult> {
     const fresh = await this.loadRequired(requestId);
     if (fresh.status === 'pending_launch') {
