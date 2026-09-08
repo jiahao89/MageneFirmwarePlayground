@@ -378,6 +378,7 @@ export class ClaudeCliAdapter implements RuntimeAdapter {
       '请重新读取当前目录下工作包 JSON（.mfp/work/ 对应文件）中的最新内容，',
       '按任务卡（taskCard）继续工作，直到下一个暂停点（新澄清问题 / 待审阅产出 / 完成），',
       '把结果写回工作包后停止。不要询问确认，直接执行。',
+      'status 字段只允许使用合法值："pending_answer"（等 PM 回答）/ "pending_review"（等 PM 审阅）/ "processing"（中间态）；禁止自造状态字符串。',
     ].join('\n');
     const res = await runProcess({
       command: bin,

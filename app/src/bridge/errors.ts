@@ -30,7 +30,12 @@ export type BridgeErrorCode =
   | 'WORKSPACE_NOT_FOUND'
   | 'PERMISSION_DENIED'
   | 'INVALID_ARGUMENT'
-  | 'NOT_IMPLEMENTED';
+  | 'NOT_IMPLEMENTED'
+  // —— Issue #18：真实 PRD 读取与完成门禁 ——
+  | 'PRD_NOT_FOUND' // prdPath 已登记但文件丢失 / 路径不是文件
+  | 'PRD_READ_FAILED' // 文件不可读（权限 / IO 错误）
+  | 'PRD_INVALID' // 空文档 / 版本无效 / 产物登记不完整
+  | 'PRD_CHANGED'; // 读取竞争（Agent 正在写入）或审阅后内容/版本已变化
 
 export interface BridgeErrorPayload {
   code: BridgeErrorCode;
@@ -56,6 +61,10 @@ const CODE_CATEGORY: Record<BridgeErrorCode, ErrorCategory> = {
   PERMISSION_DENIED: 'io',
   INVALID_ARGUMENT: 'argument',
   NOT_IMPLEMENTED: 'not_implemented',
+  PRD_NOT_FOUND: 'io',
+  PRD_READ_FAILED: 'io',
+  PRD_INVALID: 'state',
+  PRD_CHANGED: 'state',
 };
 
 export class BridgeError extends Error {

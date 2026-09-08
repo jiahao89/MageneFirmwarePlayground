@@ -177,4 +177,99 @@ describe('桥接服务 RPC（Issue #6 Tauri 子进程协议）', () => {
     walk(parsed);
     expect(keyNames.some((k) => /api[_ -]?key|token|secret|credential|password/i.test(k))).toBe(false);
   });
+
+  // —— Issue #18：readPrd / submitAnswers / complete(expectedPrd) 经 RPC ——
+  it('RPC：readPrd 返回真实文件内容与哈希；not_generated 与负例正确传播', async () => {
+    const saved = await send('saveRawInput', { req: { text: '需求 FFFF PRD 读取' } });
+    const wp = saved.result as { requestId: string };
+    await send('recognize', { requestId: wp.requestId });
+    await send('register', { requestId: wp.requestId });
+
+    // 尚未产出 → not_generated
+    const none = await send('readPrd', { requestId: wp.requestId });
+    expect(none.ok).toBe(true);
+    expect(none.result).toEqual({ state: 'not_generated', requestId: wp.requestId });
+
+    // 落盘真实 PRD（模拟 Agent 写回产物登记）
+    const content = `# RPC PRD\n\nRPC-UNIQUE-${process.pid.toString(36)}-${Date.now().toString(36)}`;
+    fs.mkdirSync(path.join(root, 'output', 'rpc'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'output', 'rpc', '02-PRD.md'), content, 'utf8');
+    const wpFile = path.join(root, '.mfp', 'work', `${wp.requestId}.json`);
+    const onDisk = JSON.parse(fs.readFileSync(wpFile, 'utf8'));
+    onDisk.prdPath = 'output/rpc/02-PRD.md';
+    onDisk.prdVersion = 1;
+    onDisk.status = 'pending_review';
+    fs.writeFileSync(wpFile, JSON.stringify(onDisk));
+
+    const doc = await send('readPrd', { requestId: wp.requestId });
+    expect(doc.ok).toBe(true);
+    const d = doc.result as { state: string; content: string; contentHash: string; version: number };
+    expect(d.state).toBe('ready');
+    expect(d.content).toBe(content);
+    expect(d.version).toBe(1);
+    const { createHash } = await import('node:crypto');
+    expect(d.contentHash).toBe(createHash('sha256').update(content, 'utf8').digest('hex'));
+
+    // complete：正确快照通过 + 响应携带 confirmedPrd
+    const done = await send('complete', { requestId: wp.requestId, expectedPrd: { version: d.version, contentHash: d.contentHash } });
+    expect(done.ok).toBe(true);
+    expect((done.result as { confirmedPrd?: unknown }).confirmedPrd).toBeDefined();
+
+    // 审阅后内容变化 → PRD_CHANGED（用第二个工作包验证）
+    const saved2 = await send('saveRawInput', { req: { text: '需求 GGGG 完成门禁' } });
+    const wp2 = saved2.result as { requestId: string };
+    await send('recognize', { requestId: wp2.requestId });
+    await send('register', { requestId: wp2.requestId });
+    const content2 = `# G PRD\n\nG-UNIQUE-${Date.now().toString(36)}`;
+    fs.writeFileSync(path.join(root, 'output', 'rpc', '02-PRD.md'), content2, 'utf8');
+    const onDisk2 = JSON.parse(fs.readFileSync(path.join(root, '.mfp', 'work', `${wp2.requestId}.json`), 'utf8'));
+    onDisk2.prdPath = 'output/rpc/02-PRD.md';
+    onDisk2.prdVersion = 1;
+    onDisk2.status = 'pending_review';
+    fs.writeFileSync(path.join(root, '.mfp', 'work', `${wp2.requestId}.json`), JSON.stringify(onDisk2));
+    const doc2 = await send('readPrd', { requestId: wp2.requestId });
+    const d2 = (doc2.result as { version: number; contentHash: string });
+    fs.appendFileSync(path.join(root, 'output', 'rpc', '02-PRD.md'), '\n\n内容被改', 'utf8');
+    const rejected = await send('complete', { requestId: wp2.requestId, expectedPrd: { version: d2.version, contentHash: d2.contentHash } });
+    expect(rejected.ok).toBe(false);
+    expect((rejected.error as { code: string }).code).toBe('PRD_CHANGED');
+  });
+
+  it('RPC：submitAnswers 整批原子保存，负例整批拒绝', async () => {
+    const saved = await send('saveRawInput', { req: { text: '需求 HHHH 批量回答' } });
+    const wp = saved.result as { requestId: string };
+    await send('recognize', { requestId: wp.requestId });
+    await send('register', { requestId: wp.requestId });
+    await send('launch', { requestId: wp.requestId });
+
+    // Agent 写问题
+    const wpFile = path.join(root, '.mfp', 'work', `${wp.requestId}.json`);
+    const onDisk = JSON.parse(fs.readFileSync(wpFile, 'utf8'));
+    onDisk.questions = [{ id: 'Q1', text: '一' }, { id: 'Q2', text: '二' }, { id: 'Q3', text: '三' }];
+    onDisk.status = 'pending_answer';
+    fs.writeFileSync(wpFile, JSON.stringify(onDisk));
+
+    const ok = await send('submitAnswers', {
+      requestId: wp.requestId,
+      answers: [
+        { questionId: 'Q1', answer: '答一' },
+        { questionId: 'Q2', answer: '答二' },
+        { questionId: 'Q3', answer: '答三' },
+      ],
+    });
+    expect(ok.ok).toBe(true);
+    const savedWp = ok.result as { status: string; questions: Array<{ id: string; answer?: string }> };
+    expect(savedWp.status).toBe('pending_answer'); // 只保存，不推进
+    expect(savedWp.questions.map((q) => q.answer)).toEqual(['答一', '答二', '答三']);
+
+    // 非法题目 → 整批拒绝
+    const bad = await send('submitAnswers', {
+      requestId: wp.requestId,
+      answers: [{ questionId: 'Q1', answer: '再答' }, { questionId: 'NOPE', answer: '非法' }],
+    });
+    expect(bad.ok).toBe(false);
+    expect((bad.error as { code: string }).code).toBe('INVALID_ARGUMENT');
+    const after = JSON.parse(fs.readFileSync(wpFile, 'utf8'));
+    expect(after.questions[0].answer).toBe('答一'); // 原已保存内容不变
+  });
 });

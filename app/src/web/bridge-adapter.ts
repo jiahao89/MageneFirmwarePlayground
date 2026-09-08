@@ -9,51 +9,22 @@ import type {
   LaunchResult,
   PreflightResult,
   PreflightCheck,
+  PrdDocument,
+  PrdExpectedSnapshot,
+  AnswerSubmission,
 } from '../bridge/index';
 
 // ============================================================================
 // 前端桥接适配器（Issue #19 真实 PRD 预览与集中问答扩展）：
-//  - 运行在 Tauri 桌面壳内（window.__TAURI_INTERNALS__ 存在）→ 走 invoke 命令映射
+//  - 运行在 Tauri 桌面壳内（window.__TAURI_INTERNALS__ 存在）→ 走 invoke 命令映射到 Rust 后端
 //  - 纯浏览器 / dev（无 Tauri）→ 走确定性 mock（FrontendMockBridge），并明确标注 [Mock 演示模式]
-//  - 契约接口扩展：
-//      - readPrd(requestId): 返回 PrdDocument（包含状态、相对路径、工作包版本、Markdown 正文、SHA-256 哈希）
-//      - submitAnswers(requestId, answers): 批量原子保存多题回答，不自动触发 resume
-//      - complete(requestId, expectedPrd?): 携带用户预览时的快照（version, contentHash）防并发覆盖
+//  - 唯一共享契约来源：app/src/bridge/types.ts 和 MfpBridge，不重复声明共享类型
 // ============================================================================
 
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
   }
-}
-
-/** PRD 文档数据契约（对齐 Issue #19 共享接口） */
-export type PrdDocument =
-  | { state: 'not_generated'; requestId: string }
-  | {
-      state: 'ready';
-      requestId: string;
-      path: string; // 项目内相对路径，例如 output/REQ-xxx/02-PRD.md
-      version: number; // WorkPackage.prdVersion
-      content: string; // 磁盘 Markdown 原文
-      contentHash: string; // 本次读取内容的 SHA-256
-    };
-
-export interface AnswerItem {
-  questionId: string;
-  answer: string;
-}
-
-export interface ExpectedPrdSnapshot {
-  version: number;
-  contentHash: string;
-}
-
-/** Web 前端增强桥接接口（兼容 MfpBridge 并扩展 Issue #19 接口） */
-export interface WebBridge extends MfpBridge {
-  readPrd(requestId: string): Promise<PrdDocument>;
-  submitAnswers(requestId: string, answers: AnswerItem[]): Promise<WorkPackage>;
-  complete(requestId: string, expectedPrd?: ExpectedPrdSnapshot): Promise<WorkPackage>;
 }
 
 export type MockScenario =
@@ -91,8 +62,8 @@ export async function computeContentHash(text: string): Promise<string> {
   return Math.abs(hash).toString(16).padStart(16, '0');
 }
 
-/** Tauri 壳内：把 WebBridge 操作映射到 Rust 命令。 */
-class TauriBridge implements WebBridge {
+/** Tauri 壳内：把 MfpBridge 操作一一映射到 Rust invoke 命令（真实桌面端不走 mock）。 */
+class TauriBridge implements MfpBridge {
   saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
     return invoke<WorkPackage>('save_raw_input', { req });
   }
@@ -120,25 +91,25 @@ class TauriBridge implements WebBridge {
   answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('answer_question', { requestId, questionId, answer });
   }
-  submitAnswers(requestId: string, answers: AnswerItem[]): Promise<WorkPackage> {
+  submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
     return invoke<WorkPackage>('submit_answers', { requestId, answers });
   }
   submitRevision(requestId: string, comment: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('submit_revision', { requestId, comment });
   }
-  complete(requestId: string, expectedPrd?: ExpectedPrdSnapshot): Promise<WorkPackage> {
+  readPrd(requestId: string): Promise<PrdDocument> {
+    return invoke<PrdDocument>('read_prd', { requestId });
+  }
+  complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
     return invoke<WorkPackage>('complete', { requestId, expectedPrd });
   }
   archive(requestId: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('archive', { requestId });
   }
-  readPrd(requestId: string): Promise<PrdDocument> {
-    return invoke<PrdDocument>('read_prd', { requestId });
-  }
 }
 
-/** 前端模拟桥：支持多场景切换、动态 PRD 文档生成与集中问答交互 */
-export class FrontendMockBridge implements WebBridge {
+/** 前端模拟桥：支持多场景切换、动态 PRD 文档生成与集中问答交互（仅在浏览器演示模式使用） */
+export class FrontendMockBridge implements MfpBridge {
   private baseMock: BrowserMockBridge;
   private scenario: MockScenario = 'normal';
   private mockPrdDocs = new Map<
@@ -194,6 +165,7 @@ export class FrontendMockBridge implements WebBridge {
         text: '若车手在传感器低电量后更换电池回连，界面是否需要弹窗提示「电量已恢复正常」？',
       },
     ];
+    wp.status = 'pending_answer';
     wp.prdPath = undefined;
     wp.prdVersion = undefined;
     return wp;
@@ -325,40 +297,8 @@ export class FrontendMockBridge implements WebBridge {
   }
 
   /** Issue #19 批量集中原子保存回答（零次 resume，不自动宣称运行） */
-  async submitAnswers(requestId: string, answers: AnswerItem[]): Promise<WorkPackage> {
-    const wp = await this.baseMock.readWorkPackage(requestId);
-    if (!Array.isArray(answers) || answers.length === 0) {
-      throw new BridgeError('INVALID_ARGUMENT', '提交回答列表不能为空');
-    }
-
-    // 校验是否有重复 questionId
-    const seen = new Set<string>();
-    for (const item of answers) {
-      if (seen.has(item.questionId)) {
-        throw new BridgeError('INVALID_ARGUMENT', `重复提交问题回答：${item.questionId}`);
-      }
-      seen.add(item.questionId);
-
-      const q = wp.questions.find((x) => x.id === item.questionId);
-      if (!q) {
-        throw new BridgeError('INVALID_ARGUMENT', `找不到澄清问题：${item.questionId}`);
-      }
-      if (!item.answer || item.answer.trim().length === 0) {
-        throw new BridgeError('INVALID_ARGUMENT', `问题 ${item.questionId} 的回答不能为空`);
-      }
-    }
-
-    // 原子更新全部回答
-    const now = new Date().toISOString();
-    for (const item of answers) {
-      const q = wp.questions.find((x) => x.id === item.questionId)!;
-      q.answer = item.answer.trim();
-      q.answeredAt = now;
-    }
-
-    // 保存本身不启动 Agent，也不宣称 running
-    wp.updatedAt = now;
-    return wp;
+  async submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
+    return this.baseMock.submitAnswers(requestId, answers);
   }
 
   /** 提交修改意见：保存意见并自增版本 */
@@ -393,7 +333,7 @@ export class FrontendMockBridge implements WebBridge {
   }
 
   /** 确认完成验收：携带用户实际审阅的 version 与 contentHash 快照校验 */
-  async complete(requestId: string, expectedPrd?: ExpectedPrdSnapshot): Promise<WorkPackage> {
+  async complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
     const wp = await this.baseMock.readWorkPackage(requestId);
 
     if (wp.status === 'completed') {
@@ -401,7 +341,7 @@ export class FrontendMockBridge implements WebBridge {
     }
 
     if (this.scenario === 'prd_changed') {
-      throw new BridgeError('PRD_CHANGED' as any, 'PRD 文档已被外部修改，请重新审阅最新版本后再确认完成');
+      throw new BridgeError('PRD_CHANGED', 'PRD 文档已被外部修改，请重新审阅最新版本后再确认完成');
     }
 
     // 校验快照一致性
@@ -409,7 +349,7 @@ export class FrontendMockBridge implements WebBridge {
       const currentDoc = this.mockPrdDocs.get(requestId);
       if (currentDoc) {
         if (currentDoc.version !== expectedPrd.version || currentDoc.contentHash !== expectedPrd.contentHash) {
-          throw new BridgeError('PRD_CHANGED' as any, 'PRD 文档内容或版本已发生变化，请重新审阅最新版本后再确认完成');
+          throw new BridgeError('PRD_CHANGED', 'PRD 文档内容或版本已发生变化，请重新审阅最新版本后再确认完成');
         }
       }
     }
@@ -429,10 +369,10 @@ export class FrontendMockBridge implements WebBridge {
     return this.baseMock.archive(requestId);
   }
 
-  /** Issue #19 真实 PRD 读取：返回特定请求专属的随机唯一 Markdown，杜绝固定模板 */
+  /** Issue #19 真实 PRD 读取：返回特定请求专属的 Markdown，杜绝固定模板，并标明 mock 模式 */
   async readPrd(requestId: string): Promise<PrdDocument> {
     if (this.scenario === 'prd_read_failed') {
-      throw new BridgeError('PRD_READ_FAILED' as any, '读取 PRD 文件失败：权限不足或磁盘文件损坏');
+      throw new BridgeError('PRD_READ_FAILED', '读取 PRD 文件失败：权限不足或磁盘文件损坏');
     }
 
     const wp = await this.baseMock.readWorkPackage(requestId);
@@ -472,6 +412,7 @@ export class FrontendMockBridge implements WebBridge {
     const uniqueSalt = `MFP-DOC-${requestId}-${Date.now().toString(36)}`;
     const content = `# ${title} (v${version})
 
+> ⚠️ mock 演示数据（非真实文件）
 > **需求编号**: \`${requestId}\`
 > **文档路径**: \`${wp.prdPath}\`
 > **文档标识**: \`${uniqueSalt}\`
@@ -526,9 +467,9 @@ export class FrontendMockBridge implements WebBridge {
   }
 }
 
-let cached: WebBridge | null = null;
+let cached: MfpBridge | null = null;
 
-export function getBridge(): WebBridge {
+export function getBridge(): MfpBridge {
   if (!cached) cached = isTauri() ? new TauriBridge() : new FrontendMockBridge();
   return cached;
 }

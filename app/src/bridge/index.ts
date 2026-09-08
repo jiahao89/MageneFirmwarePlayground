@@ -15,11 +15,16 @@ export type {
   RunState,
   RunRecord,
   SessionMetadata,
+  ConfirmedPrd,
   WorkPackage,
   SaveRawInputRequest,
   PreflightCheck,
   PreflightResult,
   LaunchResult,
+  PrdDocument,
+  PrdExpectedSnapshot,
+  AnswerSubmission,
+  PrdFileAccess,
   MfpBridge,
 } from './types';
 

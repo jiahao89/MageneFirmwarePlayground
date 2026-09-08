@@ -40,16 +40,16 @@ import {
   FrontendMockBridge,
   isTauri,
   type MockScenario,
-  type PrdDocument,
-  type ExpectedPrdSnapshot,
-  type AnswerItem,
 } from './bridge-adapter';
 import type {
   WorkPackage,
   RecognitionResult,
   PreflightResult,
   RequestStatus,
-} from '../bridge/types';
+  PrdDocument,
+  PrdExpectedSnapshot,
+  AnswerSubmission,
+} from '../bridge/index';
 import type { BridgeErrorPayload } from '../bridge/errors';
 import './app.css';
 
@@ -429,7 +429,7 @@ export function App() {
   // 仅保存回答（不唤起 Agent）
   const handleSaveAnswersOnly = async () => {
     if (!activeWorkPackage) return;
-    const items: AnswerItem[] = [];
+    const items: AnswerSubmission[] = [];
     for (const q of activeWorkPackage.questions) {
       if (!q.answer && answers[q.id]?.trim()) {
         items.push({ questionId: q.id, answer: answers[q.id].trim() });
@@ -462,7 +462,7 @@ export function App() {
   // 保存回答并继续（原子提交并唤起 Agent 一次）
   const handleSaveAnswersAndResume = async () => {
     if (!activeWorkPackage) return;
-    const items: AnswerItem[] = [];
+    const items: AnswerSubmission[] = [];
     for (const q of activeWorkPackage.questions) {
       if (!q.answer && answers[q.id]?.trim()) {
         items.push({ questionId: q.id, answer: answers[q.id].trim() });
@@ -656,12 +656,12 @@ export function App() {
     }
   };
 
-  // 确认完成验收（带 ExpectedPrdSnapshot 校验保护）
+  // 确认完成验收（带 PrdExpectedSnapshot 校验保护）
   const handleConfirmCompletion = async () => {
     if (!activeWorkPackage) return;
     setIsCompleting(true);
     try {
-      const snapshot: ExpectedPrdSnapshot | undefined =
+      const snapshot: PrdExpectedSnapshot | undefined =
         prdDoc && prdDoc.state === 'ready'
           ? { version: prdDoc.version, contentHash: prdDoc.contentHash }
           : undefined;
