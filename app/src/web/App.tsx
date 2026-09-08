@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -31,8 +31,19 @@ import {
   XCircle,
   Zap,
   Check,
+  Save,
+  FileCode2,
+  Hash,
 } from 'lucide-react';
-import { getBridge, FrontendMockBridge, type MockScenario } from './bridge-adapter';
+import {
+  getBridge,
+  FrontendMockBridge,
+  isTauri,
+  type MockScenario,
+  type PrdDocument,
+  type ExpectedPrdSnapshot,
+  type AnswerItem,
+} from './bridge-adapter';
 import type {
   WorkPackage,
   RecognitionResult,
@@ -81,11 +92,22 @@ export function App() {
   // Mock 场景模拟器状态 (联调辅助)
   const [currentScenario, setCurrentScenario] = useState<MockScenario>('normal');
 
-  // 澄清问答与修改意见
+  // 澄清问答与修改意见 (Issue #19 扩展)
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [isSavingAnswers, setIsSavingAnswers] = useState(false);
+  const [resumeAfterSaveFailed, setResumeAfterSaveFailed] = useState(false);
   const [revisionComment, setRevisionComment] = useState('');
+  const [revisionSavedCommentId, setRevisionSavedCommentId] = useState<string | null>(null);
   const [isSubmittingRevision, setIsSubmittingRevision] = useState(false);
   const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
+
+  // PRD 真实文档状态 (Issue #19 扩展)
+  const [prdDoc, setPrdDoc] = useState<PrdDocument | null>(null);
+  const [prdLoading, setPrdLoading] = useState(false);
+  const [prdError, setPrdError] = useState<{ code: string; message: string } | null>(null);
+  const prdRequestIdRef = useRef<string>('');
+
 
   // 初始化加载
   useEffect(() => {
@@ -99,15 +121,21 @@ export function App() {
     const timer = setInterval(async () => {
       try {
         const wp = await bridge.readWorkPackage(activeWorkPackage.requestId);
-        setActiveWorkPackage(wp);
-        setWorkPackages((prev) =>
-          prev.map((w) => (w.requestId === wp.requestId ? wp : w))
-        );
+        if (wp.requestId === activeWorkPackage.requestId) {
+          // 如果状态或 PRD 版本变迁，自动刷新 PRD 文档
+          if (wp.status !== activeWorkPackage.status || wp.prdVersion !== activeWorkPackage.prdVersion) {
+            loadPrdDocument(wp.requestId);
+          }
+          setActiveWorkPackage(wp);
+          setWorkPackages((prev) =>
+            prev.map((w) => (w.requestId === wp.requestId ? wp : w))
+          );
+        }
       } catch {}
     }, 3000);
 
     return () => clearInterval(timer);
-  }, [activeWorkPackage?.requestId, currentPage]);
+  }, [activeWorkPackage?.requestId, activeWorkPackage?.status, activeWorkPackage?.prdVersion, currentPage]);
 
   const loadWorkPackageList = async () => {
     try {
@@ -126,7 +154,33 @@ export function App() {
         setWorkPackages((prev) =>
           prev.map((w) => (w.requestId === wp.requestId ? wp : w))
         );
+        loadPrdDocument(wp.requestId);
       } catch {}
+    }
+  };
+
+  // 读取真实 PRD 文档（防竞态覆盖）
+  const loadPrdDocument = async (requestId: string) => {
+    prdRequestIdRef.current = requestId;
+    setPrdLoading(true);
+    setPrdError(null);
+    try {
+      const doc = await bridge.readPrd(requestId);
+      if (prdRequestIdRef.current === requestId) {
+        setPrdDoc(doc);
+      }
+    } catch (e: any) {
+      if (prdRequestIdRef.current === requestId) {
+        setPrdError({
+          code: e?.code || e?.payload?.code || 'PRD_READ_FAILED',
+          message: e?.payload?.message || e?.message || String(e),
+        });
+        setPrdDoc(null);
+      }
+    } finally {
+      if (prdRequestIdRef.current === requestId) {
+        setPrdLoading(false);
+      }
     }
   };
 
@@ -138,6 +192,7 @@ export function App() {
     }
     if (activeWorkPackage) {
       runPreflight(activeWorkPackage.requestId);
+      loadPrdDocument(activeWorkPackage.requestId);
     }
   };
 
@@ -209,13 +264,26 @@ export function App() {
             id: 'q-002',
             text: '踏频传感器单次骑行低电量广播的抑制周期是多久？建议为 15 分钟或单次骑行最多 2 次。',
           },
+          {
+            id: 'q-003',
+            text: '若车手在传感器低电量后更换电池回连，界面是否需要弹窗提示「电量已恢复正常」？',
+          },
         ];
       }
       setWorkPackages((prev) => [wp, ...prev.filter((p) => p.requestId !== wp.requestId)]);
       setActiveWorkPackage(wp);
       setCurrentPage('detail');
       setActiveDetailTab('overview');
+      setRevisionComment('');
+      setRevisionSavedCommentId(null);
+      setResumeAfterSaveFailed(false);
+      const initAnswers: Record<string, string> = {};
+      for (const q of wp.questions) {
+        initAnswers[q.id] = q.answer || '';
+      }
+      setAnswers(initAnswers);
       runPreflight(wp.requestId);
+      loadPrdDocument(wp.requestId);
     } catch (err: any) {
       setIntakeError(err?.message || '登记需求失败');
     } finally {
@@ -240,7 +308,20 @@ export function App() {
       setCurrentPage('detail');
       setLastLaunchError(null);
       setSessionFeedback(null);
+      setRevisionComment('');
+      setRevisionSavedCommentId(null);
+      setResumeAfterSaveFailed(false);
+
+      // 初始化问答草稿
+      const initAnswers: Record<string, string> = {};
+      for (const q of wp.questions) {
+        initAnswers[q.id] = q.answer || '';
+      }
+      setAnswers(initAnswers);
+
       runPreflight(reqId);
+      loadPrdDocument(reqId);
+
       if (wp.status === 'pending_answer') setActiveDetailTab('clarification');
       else if (wp.status === 'pending_review' || wp.status === 'completed') setActiveDetailTab('prd');
       else setActiveDetailTab('overview');
@@ -249,6 +330,7 @@ export function App() {
       if (found) {
         setActiveWorkPackage(found);
         setCurrentPage('detail');
+        loadPrdDocument(reqId);
       }
     }
   };
@@ -344,7 +426,98 @@ export function App() {
     }
   };
 
-  // 澄清问答提交
+  // 仅保存回答（不唤起 Agent）
+  const handleSaveAnswersOnly = async () => {
+    if (!activeWorkPackage) return;
+    const items: AnswerItem[] = [];
+    for (const q of activeWorkPackage.questions) {
+      if (!q.answer && answers[q.id]?.trim()) {
+        items.push({ questionId: q.id, answer: answers[q.id].trim() });
+      }
+    }
+    if (items.length === 0) {
+      alert('请至少填写一个待回答问题的回答内容');
+      return;
+    }
+
+    setIsSavingAnswers(true);
+    try {
+      const updated = await bridge.submitAnswers(activeWorkPackage.requestId, items);
+      setActiveWorkPackage(updated);
+      setWorkPackages((prev) =>
+        prev.map((w) => (w.requestId === updated.requestId ? updated : w))
+      );
+      setSessionFeedback({
+        type: 'success',
+        title: '回答已保存（未唤起 Agent）',
+        message: `已成功保存 ${items.length} 条回答至工作包。当前操作未唤起 Claude Code，您可以继续填写其他项或点击「保存回答并继续」。`,
+      });
+    } catch (e: any) {
+      alert(e?.message || '保存回答失败');
+    } finally {
+      setIsSavingAnswers(false);
+    }
+  };
+
+  // 保存回答并继续（原子提交并唤起 Agent 一次）
+  const handleSaveAnswersAndResume = async () => {
+    if (!activeWorkPackage) return;
+    const items: AnswerItem[] = [];
+    for (const q of activeWorkPackage.questions) {
+      if (!q.answer && answers[q.id]?.trim()) {
+        items.push({ questionId: q.id, answer: answers[q.id].trim() });
+      }
+    }
+
+    const pendingQuestions = activeWorkPackage.questions.filter((q) => !q.answer);
+    if (items.length === 0 && pendingQuestions.length > 0) {
+      alert('请先填写回答内容后再继续唤起 Agent');
+      return;
+    }
+
+    setIsSavingAnswers(true);
+    setResumeAfterSaveFailed(false);
+    try {
+      let updated = activeWorkPackage;
+      if (items.length > 0) {
+        updated = await bridge.submitAnswers(activeWorkPackage.requestId, items);
+        setActiveWorkPackage(updated);
+        setWorkPackages((prev) =>
+          prev.map((w) => (w.requestId === updated.requestId ? updated : w))
+        );
+      }
+
+      // 单次调用 resume，严禁对每个问题循环调用
+      try {
+        const resumeRes = await bridge.resume(activeWorkPackage.requestId);
+        setSessionFeedback({
+          type: 'success',
+          title: '回答已保存并恢复会话',
+          message: `已成功保存回答并唤起外部终端 Claude Code [${resumeRes.sessionId || '既有会话'}] 继续执行！`,
+        });
+        await refreshActiveWorkPackage();
+      } catch (resumeErr: any) {
+        setResumeAfterSaveFailed(true);
+        const payload: BridgeErrorPayload = resumeErr?.payload || {
+          code: (resumeErr?.code as any) || 'TERMINAL_LAUNCH_FAILED',
+          category: (resumeErr?.category as any) || 'io',
+          message: resumeErr?.message || String(resumeErr),
+        };
+        setLastLaunchError(payload);
+        setSessionFeedback({
+          type: 'warning',
+          title: '回答已保存，但唤起终端失败',
+          message: `回答已安全写入工作包，但唤起 Claude Code 失败 (${payload.code})。您可直接点击下方「重试唤起 Agent」继续，无需重复输入。`,
+        });
+      }
+    } catch (e: any) {
+      alert(e?.message || '提交回答失败');
+    } finally {
+      setIsSavingAnswers(false);
+    }
+  };
+
+  // 单个问题的回答（向后兼容）
   const handleAnswerQuestion = async (qId: string, autoResume = false) => {
     if (!activeWorkPackage) return;
     const ans = answers[qId] || '';
@@ -354,52 +527,146 @@ export function App() {
     }
 
     try {
-      let updated = await bridge.answerQuestion(activeWorkPackage.requestId, qId, ans);
-      if (autoResume) {
-        await bridge.resume(activeWorkPackage.requestId);
-      }
+      const updated = await bridge.submitAnswers(activeWorkPackage.requestId, [
+        { questionId: qId, answer: ans.trim() },
+      ]);
       setActiveWorkPackage(updated);
       setWorkPackages((prev) =>
         prev.map((w) => (w.requestId === updated.requestId ? updated : w))
       );
-      setSessionFeedback({
-        type: 'success',
-        title: '回答已同步',
-        message: autoResume ? '回答已保存并成功唤起 Claude Code 会话恢复！' : '回答已暂存至工作包。',
-      });
+      if (autoResume) {
+        try {
+          await bridge.resume(activeWorkPackage.requestId);
+          setSessionFeedback({
+            type: 'success',
+            title: '回答已同步',
+            message: '回答已保存并成功唤起 Claude Code 会话恢复！',
+          });
+          await refreshActiveWorkPackage();
+        } catch (resumeErr: any) {
+          setResumeAfterSaveFailed(true);
+          setSessionFeedback({
+            type: 'warning',
+            title: '回答已保存，但唤起终端失败',
+            message: '回答已安全写入工作包，但拉起终端失败，可点击重试唤起。',
+          });
+        }
+      } else {
+        setSessionFeedback({
+          type: 'success',
+          title: '回答已暂存',
+          message: '回答已暂存至工作包（尚未唤起 Agent）。',
+        });
+      }
     } catch (e: any) {
       alert(e?.message || '提交回答失败');
     }
   };
 
-  // 提交修改意见
+  // 提交修改意见并唤起 Agent（或重试唤起）
   const handleSubmitRevision = async () => {
-    if (!activeWorkPackage || !revisionComment.trim()) return;
+    if (!activeWorkPackage) return;
+    if (activeWorkPackage.status === 'completed') {
+      alert('需求已标记为完成终态，不可再提交修改意见');
+      return;
+    }
+    if (activeWorkPackage.session.processState === 'running') {
+      alert('Claude Code 正在终端运行中，请等待执行完成或返回结果后再提交修改意见');
+      return;
+    }
+
+    // 若修改意见已成功写入 revision.md 但上次唤起终端失败，则只重试唤起，不重复调用 submitRevision
+    if (revisionSavedCommentId) {
+      setIsSubmittingRevision(true);
+      try {
+        const resumeRes = await bridge.resume(activeWorkPackage.requestId);
+        setRevisionSavedCommentId(null);
+        setRevisionComment('');
+        setResumeAfterSaveFailed(false);
+        setSessionFeedback({
+          type: 'success',
+          title: 'Claude Code 会话已恢复',
+          message: `已成功唤起外部终端 [${resumeRes.sessionId || '既有会话'}] 开始修订 PRD！`,
+        });
+        await refreshActiveWorkPackage();
+      } catch (resumeErr: any) {
+        const payload: BridgeErrorPayload = resumeErr?.payload || {
+          code: (resumeErr?.code as any) || 'TERMINAL_LAUNCH_FAILED',
+          category: (resumeErr?.category as any) || 'io',
+          message: resumeErr?.message || String(resumeErr),
+        };
+        setLastLaunchError(payload);
+        setSessionFeedback({
+          type: 'warning',
+          title: '唤起终端失败（修改意见已安全保存）',
+          message: `重试唤起失败: ${payload.message}。修改意见已在 revision.md 中，无需重新输入，可再次点击重试唤起。`,
+        });
+      } finally {
+        setIsSubmittingRevision(false);
+      }
+      return;
+    }
+
+    if (!revisionComment.trim()) {
+      alert('请填写修改意见或补充约束内容');
+      return;
+    }
+
     setIsSubmittingRevision(true);
     try {
-      const updated = await bridge.submitRevision(activeWorkPackage.requestId, revisionComment);
-      setRevisionComment('');
+      // 1. 提交修改意见写入 revision.md
+      const updated = await bridge.submitRevision(activeWorkPackage.requestId, revisionComment.trim());
       setActiveWorkPackage(updated);
       setWorkPackages((prev) =>
         prev.map((w) => (w.requestId === updated.requestId ? updated : w))
       );
-      setSessionFeedback({
-        type: 'success',
-        title: '修改意见已记录',
-        message: '修改意见已写入 revision.md，状态已更新为「修改中」。',
-      });
+      // 记录已保存标记
+      setRevisionSavedCommentId(updated.requestId);
+
+      // 2. 紧接着唤起 Agent
+      try {
+        const resumeRes = await bridge.resume(activeWorkPackage.requestId);
+        setRevisionSavedCommentId(null);
+        setRevisionComment('');
+        setResumeAfterSaveFailed(false);
+        setSessionFeedback({
+          type: 'success',
+          title: '修改意见已记录并恢复会话',
+          message: `修改意见已写入 revision.md，已唤起终端 [${resumeRes.sessionId || '会话'}] 开始修订 PRD！`,
+        });
+        await refreshActiveWorkPackage();
+      } catch (resumeErr: any) {
+        setResumeAfterSaveFailed(true);
+        const payload: BridgeErrorPayload = resumeErr?.payload || {
+          code: (resumeErr?.code as any) || 'TERMINAL_LAUNCH_FAILED',
+          category: (resumeErr?.category as any) || 'io',
+          message: resumeErr?.message || String(resumeErr),
+        };
+        setLastLaunchError(payload);
+        setSessionFeedback({
+          type: 'warning',
+          title: '修改意见已保存，但唤起终端失败',
+          message: `意见已成功写入 revision.md（状态已更新为修改中），但唤起外部终端失败 (${payload.code})。您可直接点击下方「重试唤起 Agent（修改意见已保存）」继续，无需重新提交意见。`,
+        });
+      }
     } catch (e: any) {
-      alert(e?.message || '提交修改意见失败');
+      alert(e?.message || '提交修改意见失败，内容已保留');
     } finally {
       setIsSubmittingRevision(false);
     }
   };
 
-  // 确认完成验收
+  // 确认完成验收（带 ExpectedPrdSnapshot 校验保护）
   const handleConfirmCompletion = async () => {
     if (!activeWorkPackage) return;
+    setIsCompleting(true);
     try {
-      const updated = await bridge.complete(activeWorkPackage.requestId);
+      const snapshot: ExpectedPrdSnapshot | undefined =
+        prdDoc && prdDoc.state === 'ready'
+          ? { version: prdDoc.version, contentHash: prdDoc.contentHash }
+          : undefined;
+
+      const updated = await bridge.complete(activeWorkPackage.requestId, snapshot);
       setShowCompleteModal(false);
       setActiveWorkPackage(updated);
       setWorkPackages((prev) =>
@@ -410,8 +677,18 @@ export function App() {
         title: '需求已确认完成',
         message: 'PRD 终稿已锁定，工作包已标记为「完成」终态。',
       });
+      loadPrdDocument(activeWorkPackage.requestId);
     } catch (e: any) {
-      alert(e?.message || '确认完成失败');
+      const errCode = e?.code || e?.payload?.code;
+      if (errCode === 'PRD_CHANGED') {
+        alert('⚠️ 校验失败：PRD 文件刚刚被外部修改，内容 Hash 与审阅时不一致！\n系统已为您自动重新加载最新 PRD，请重新审阅后再确认完成。');
+        setShowCompleteModal(false);
+        loadPrdDocument(activeWorkPackage.requestId);
+      } else {
+        alert(e?.message || e?.payload?.message || '确认完成失败');
+      }
+    } finally {
+      setIsCompleting(false);
     }
   };
 
@@ -455,41 +732,7 @@ export function App() {
     }
   };
 
-  // 生成展示用 PRD Markdown
-  const getPrdContent = (wp: WorkPackage) => {
-    const title = wp.recognition?.rewrittenRequirement.slice(0, 30) || '功能需求 PRD';
-    return `# ${title} (v1.${wp.revisionComments.length + 1})
 
-## 1. 背景与目标
-基于车手反馈与固件 PM 规范，优化该功能的通信时序、状态提示与异常降级策略。
-
-- **用户画像**：${wp.recognition?.user || '公路与山地骑行车手'}
-- **使用场景**：${wp.recognition?.scenario || '日常户外训练与多外设并发连接'}
-- **核心目标**：${wp.recognition?.goal || '保障数据准确性与骑行安全'}
-
----
-
-## 2. 协议与交互规范
-
-### 2.1 状态流转时序
-1. **正常工作阶段**：主循环维持标准广播接收。
-2. **低电量/异常阶段**：触发 3 秒无阻塞防遮挡提示，并在 FIT 文件记录状态码。
-3. **恢复机制**：支持指数退避重连。
-
-| 阶段 | 周期 | 预期功耗 | 交互响应 |
-|---|---|---|---|
-| 初始就绪 | 1,000 ms | ~4.2 mA | 状态栏常亮 |
-| 异常告警 | 3,000 ms | ~2.1 mA | 黄闪提示 3 秒 |
-| 休眠降级 | 30,000 ms | ~0.3 mA | 仅记录 FIT |
-
----
-
-## 3. 验收标准
-- [x] 遵循 \`knowledge-base/01_事实源/BENCHMARK.md\` 事实红线规范
-- [x] 确保 6 层人群模型 L1-L3 车手核心体验一致
-- [x] 异常断电与极端弱信号下不发生死锁
-`;
-  };
 
   // 检查 Preflight 是否通过
   const isPreflightPassed = preflight ? preflight.ok : false;
@@ -711,40 +954,58 @@ export function App() {
           </button>
         </nav>
 
-        {/* 联调 Mock 场景模拟器快捷切换 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
-            <span style={{ color: 'var(--text-subtle)' }}>模拟场景:</span>
-            <select
-              style={{
-                background: 'var(--bg-surface-raised)',
-                color: 'var(--brand-primary)',
-                border: '1px solid var(--border-strong)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '3px 8px',
-                fontSize: 11,
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-              value={currentScenario}
-              onChange={(e) => handleScenarioChange(e.target.value as MockScenario)}
-            >
-              <option value="normal">🟢 检查正常通过</option>
-              <option value="cli_not_installed">🔴 CLI 未安装</option>
-              <option value="not_authenticated">🟡 未认证 / 登录失效</option>
-              <option value="root_missing">🔴 项目目录丢失</option>
-              <option value="launch_failed">🔴 终端启动失败</option>
-              <option value="resume_fallback">🟠 恢复会话降级</option>
-            </select>
-          </div>
-
-          <div className="header-status-indicator">
-            <div className={`status-dot ${activeWorkPackage?.session.processState === 'running' ? 'pulsing' : 'active'}`} />
-            <span>
-              {activeWorkPackage?.session.processState === 'running' ? 'Agent 运行中' : '本地桥接 (Mock Ready)'}
+        {/* 运行模式与环境状态 */}
+        {isTauri() ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span className="badge badge-done" style={{ background: 'rgba(34, 197, 94, 0.15)', color: '#4ade80', fontSize: 11, padding: '3px 8px' }}>
+              macOS 桌面应用模式 (Tauri)
             </span>
+            <div className="header-status-indicator">
+              <div className={`status-dot ${activeWorkPackage?.session.processState === 'running' ? 'pulsing' : 'active'}`} />
+              <span>
+                {activeWorkPackage?.session.processState === 'running' ? 'Agent 运行中' : '本地桥接已连接'}
+              </span>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+              <span className="badge badge-pending" style={{ fontSize: 10, padding: '2px 6px' }}>Mock 演示模式</span>
+              <span style={{ color: 'var(--text-subtle)' }}>模拟场景:</span>
+              <select
+                style={{
+                  background: 'var(--bg-surface-raised)',
+                  color: 'var(--brand-primary)',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '3px 8px',
+                  fontSize: 11,
+                  outline: 'none',
+                  cursor: 'pointer',
+                }}
+                value={currentScenario}
+                onChange={(e) => handleScenarioChange(e.target.value as MockScenario)}
+              >
+                <option value="normal">🟢 正常通过 (PRD 就绪)</option>
+                <option value="cli_not_installed">🔴 CLI 未安装</option>
+                <option value="not_authenticated">🟡 未认证 / 登录失效</option>
+                <option value="root_missing">🔴 项目目录丢失</option>
+                <option value="launch_failed">🔴 终端启动失败</option>
+                <option value="resume_fallback">🟠 恢复会话降级</option>
+                <option value="prd_not_found">📁 PRD 未生成 (not_generated)</option>
+                <option value="prd_read_failed">⚠️ PRD 读取失败 (500 异常)</option>
+                <option value="prd_changed">⚡ PRD 冲突变更 (PRD_CHANGED)</option>
+              </select>
+            </div>
+
+            <div className="header-status-indicator">
+              <div className={`status-dot ${activeWorkPackage?.session.processState === 'running' ? 'pulsing' : 'active'}`} />
+              <span>
+                {activeWorkPackage?.session.processState === 'running' ? 'Agent 运行中' : '前端 Mock 就绪'}
+              </span>
+            </div>
+          </div>
+        )}
       </header>
 
       {/* 主工作区 */}
@@ -1210,6 +1471,29 @@ export function App() {
               </div>
             </div>
 
+            {/* 全局会话反馈提示 (对所有 Tab 可见) */}
+            {sessionFeedback && (
+              <div
+                style={{ marginBottom: 16 }}
+                className={`alert-box alert-${sessionFeedback.type === 'error' ? 'danger' : sessionFeedback.type === 'warning' ? 'warning' : 'info'}`}
+              >
+                {sessionFeedback.type === 'error' ? (
+                  <XCircle size={18} />
+                ) : sessionFeedback.type === 'warning' ? (
+                  <AlertTriangle size={18} />
+                ) : (
+                  <CheckCircle2 size={18} color="var(--brand-primary)" />
+                )}
+                <div>
+                  <strong>{sessionFeedback.title}</strong>
+                  <div style={{ marginTop: 2 }}>{sessionFeedback.message}</div>
+                  {sessionFeedback.details && (
+                    <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{sessionFeedback.details}</div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Tab 导航 */}
             <div style={{ display: 'flex', gap: 8, borderBottom: '1px solid var(--border-subtle)', paddingBottom: 10, marginBottom: 20 }}>
               <button
@@ -1250,19 +1534,6 @@ export function App() {
             {/* Tab 1: 启动 Agent & Preflight 检查 */}
             {activeDetailTab === 'overview' && (
               <div>
-                {/* 会话反馈提示 */}
-                {sessionFeedback && (
-                  <div className={`alert-box alert-${sessionFeedback.type === 'error' ? 'danger' : sessionFeedback.type === 'warning' ? 'warning' : 'info'}`}>
-                    {sessionFeedback.type === 'error' ? <XCircle size={18} /> : sessionFeedback.type === 'warning' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} color="var(--brand-primary)" />}
-                    <div>
-                      <strong>{sessionFeedback.title}</strong>
-                      <div style={{ marginTop: 2 }}>{sessionFeedback.message}</div>
-                      {sessionFeedback.details && (
-                        <div style={{ fontSize: 12, opacity: 0.85, marginTop: 4 }}>{sessionFeedback.details}</div>
-                      )}
-                    </div>
-                  </div>
-                )}
 
                 {/* Preflight 失败诊断与建议 */}
                 {renderPreflightDiagnosis()}
@@ -1493,93 +1764,185 @@ export function App() {
             )}
 
             {/* Tab 2: 澄清问答 */}
-            {activeDetailTab === 'clarification' && (
-              <div className="clarification-panel">
-                <div className="alert-box alert-info">
-                  <Info size={18} />
-                  <div>
-                    <strong>澄清机制说明：</strong>
-                    当 Claude Code 发现信息缺口或关键产品边界未决时，会将阻塞性问题写入 <code>requests/{activeWorkPackage.requestId}/questions.json</code> 并暂停。
-                    您在此填写的回答将同步至工作包并自动唤起会话恢复。
-                  </div>
-                </div>
+            {activeDetailTab === 'clarification' && (() => {
+              const pendingQuestions = activeWorkPackage.questions.filter((q) => !q.answer);
+              const answeredQuestions = activeWorkPackage.questions.filter((q) => q.answer);
+              const currentFilledCount = pendingQuestions.filter(
+                (q) => (answers[q.id] || '').trim().length > 0
+              ).length;
+              const unFilledCount = pendingQuestions.length - currentFilledCount;
 
-                <div className="card" style={{ marginBottom: 24 }}>
-                  <div className="card-header">
-                    <span className="card-title">
-                      <HelpCircle size={18} color="#facc15" />
-                      待 PM 确认的问题 ({activeWorkPackage.questions.filter((q) => !q.answer).length})
-                    </span>
-                  </div>
-
-                  {activeWorkPackage.questions.filter((q) => !q.answer).length === 0 ? (
-                    <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-subtle)' }}>
-                      <CheckCircle2 size={32} color="#4ade80" style={{ margin: '0 auto 8px', opacity: 0.8 }} />
-                      <p style={{ fontSize: 14, color: 'var(--text-main)' }}>暂无待回答的澄清问题</p>
-                      <p style={{ fontSize: 12, marginTop: 4 }}>Agent 目前信息完备或已进入 PRD 撰写阶段。</p>
+              return (
+                <div className="clarification-panel">
+                  <div className="alert-box alert-info">
+                    <Info size={18} />
+                    <div>
+                      <strong>澄清机制说明：</strong>
+                      当 Claude Code 发现信息缺口或关键产品边界未决时，会将阻塞性问题写入 <code>requests/{activeWorkPackage.requestId}/questions.json</code> 并暂停。
+                      您在此集中填写的回答将同步至工作包，支持「仅保存回答」或「保存回答并继续唤起 Agent」。
                     </div>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-                      {activeWorkPackage.questions
-                        .filter((q) => !q.answer)
-                        .map((q, idx) => (
-                          <div
-                            key={q.id}
-                            style={{
-                              background: 'var(--bg-surface-raised)',
-                              border: '1px solid var(--border-subtle)',
-                              borderRadius: 'var(--radius-md)',
-                              padding: 18,
-                            }}
-                          >
-                            <div style={{ fontSize: 15, fontWeight: 600, color: '#ffffff', marginBottom: 8 }}>
-                              #{idx + 1} {q.text}
-                            </div>
+                  </div>
 
-                            <div className="form-group" style={{ marginBottom: 12 }}>
-                              <textarea
-                                className="form-textarea"
-                                rows={3}
-                                placeholder="输入 PM 决策口径或产品边界规则..."
-                                value={answers[q.id] || ''}
-                                onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
-                              />
-                            </div>
-
-                            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-                              <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => handleAnswerQuestion(q.id, false)}
-                              >
-                                暂存回答
-                              </button>
-                              <button
-                                className="btn btn-primary btn-sm"
-                                onClick={() => handleAnswerQuestion(q.id, true)}
-                              >
-                                <Send size={13} />
-                                回答并恢复 Claude Code
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                  {resumeAfterSaveFailed && (
+                    <div className="alert-box alert-warning" style={{ marginBottom: 16 }}>
+                      <AlertTriangle size={18} />
+                      <div style={{ flex: 1 }}>
+                        <strong>回答已保存，但终端拉起失败：</strong>
+                        回答内容已成功持久化至工作包，当前 Agent 终端未正常运行。您可以直接重试恢复会话，无需重新输入。
+                      </div>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={isStartingSession}
+                        onClick={handleResumeSession}
+                      >
+                        <RefreshCw size={12} className={isStartingSession ? 'animate-spin' : ''} />
+                        重试唤起 Claude Code
+                      </button>
                     </div>
                   )}
-                </div>
 
-                {/* 已回答历史 */}
-                {activeWorkPackage.questions.filter((q) => q.answer).length > 0 && (
-                  <div className="card">
+                  {/* 问答统计与集中操作栏 */}
+                  <div className="card" style={{ marginBottom: 20 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+                        <div>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>待回答问题: </span>
+                          <strong style={{ fontSize: 16, color: pendingQuestions.length > 0 ? '#facc15' : '#4ade80' }}>
+                            {pendingQuestions.length}
+                          </strong>
+                        </div>
+                        <div style={{ height: 16, width: 1, background: 'var(--border-subtle)' }} />
+                        <div>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>已澄清记录: </span>
+                          <strong style={{ fontSize: 16, color: '#4ade80' }}>{answeredQuestions.length}</strong>
+                        </div>
+                        <div style={{ height: 16, width: 1, background: 'var(--border-subtle)' }} />
+                        <div>
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>本次已填写草稿: </span>
+                          <strong style={{ fontSize: 16, color: '#00b4d8' }}>{currentFilledCount}</strong>
+                          {pendingQuestions.length > 0 && unFilledCount > 0 && (
+                            <span style={{ fontSize: 11, color: 'var(--text-subtle)', marginLeft: 6 }}>
+                              (剩余 {unFilledCount} 项待填)
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {pendingQuestions.length > 0 && (
+                        <div style={{ display: 'flex', gap: 10 }}>
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            disabled={isSavingAnswers || currentFilledCount === 0}
+                            onClick={handleSaveAnswersOnly}
+                            title="仅保存至工作包，不唤起 Agent 终端"
+                          >
+                            {isSavingAnswers ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                            仅保存回答 (不唤起)
+                          </button>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            disabled={isSavingAnswers || (currentFilledCount === 0 && pendingQuestions.length > 0)}
+                            onClick={handleSaveAnswersAndResume}
+                            title="保存已填写的回答并唤起 Claude Code 继续执行"
+                          >
+                            {isSavingAnswers ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                            保存回答并继续
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {pendingQuestions.length > 0 && currentFilledCount > 0 && unFilledCount > 0 && (
+                      <div style={{ fontSize: 12, color: '#f59e0b', marginTop: 10, background: 'rgba(245, 158, 11, 0.08)', padding: '6px 12px', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(245, 158, 11, 0.2)' }}>
+                        ℹ️ 提示：当前仅填写了 {currentFilledCount} 项，尚有 {unFilledCount} 项未填。系统支持部分提交并继续唤起 Agent，未填项将保持待回答状态。
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="card" style={{ marginBottom: 24 }}>
                     <div className="card-header">
                       <span className="card-title">
-                        <CheckCircle2 size={18} color="#4ade80" />
-                        已澄清记录
+                        <HelpCircle size={18} color="#facc15" />
+                        待 PM 确认的问题 ({pendingQuestions.length})
                       </span>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                      {activeWorkPackage.questions
-                        .filter((q) => q.answer)
-                        .map((q) => (
+
+                    {pendingQuestions.length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '30px 0', color: 'var(--text-subtle)' }}>
+                        <CheckCircle2 size={32} color="#4ade80" style={{ margin: '0 auto 8px', opacity: 0.8 }} />
+                        <p style={{ fontSize: 14, color: 'var(--text-main)' }}>暂无待回答的澄清问题</p>
+                        <p style={{ fontSize: 12, marginTop: 4 }}>Agent 目前信息完备或已进入 PRD 撰写阶段。</p>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                        {pendingQuestions.map((q, idx) => {
+                          const hasDraft = !!(answers[q.id] || '').trim();
+                          return (
+                            <div
+                              key={q.id}
+                              style={{
+                                background: 'var(--bg-surface-raised)',
+                                border: hasDraft ? '1px solid rgba(0, 180, 216, 0.35)' : '1px solid var(--border-subtle)',
+                                borderRadius: 'var(--radius-md)',
+                                padding: 18,
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                                <div style={{ fontSize: 15, fontWeight: 600, color: '#ffffff', flex: 1, paddingRight: 10 }}>
+                                  #{idx + 1} {q.text}
+                                </div>
+                                <span className={`badge ${hasDraft ? 'badge-running' : 'badge-outline'}`} style={{ fontSize: 11 }}>
+                                  {hasDraft ? '已填草稿' : '待填写'}
+                                </span>
+                              </div>
+
+                              <div className="form-group" style={{ marginBottom: 12 }}>
+                                <textarea
+                                  className="form-textarea"
+                                  rows={3}
+                                  placeholder="输入 PM 决策口径或产品边界规则..."
+                                  value={answers[q.id] || ''}
+                                  onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                                />
+                              </div>
+
+                              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  disabled={!hasDraft}
+                                  onClick={() => handleAnswerQuestion(q.id, false)}
+                                  title="仅保存本题回答至工作包"
+                                >
+                                  暂存回答
+                                </button>
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  disabled={!hasDraft}
+                                  onClick={() => handleAnswerQuestion(q.id, true)}
+                                  title="保存本题回答并唤起 Claude Code"
+                                >
+                                  <Send size={13} />
+                                  回答并继续
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 已回答历史 */}
+                  {answeredQuestions.length > 0 && (
+                    <div className="card">
+                      <div className="card-header">
+                        <span className="card-title">
+                          <CheckCircle2 size={18} color="#4ade80" />
+                          已澄清记录 ({answeredQuestions.length})
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                        {answeredQuestions.map((q) => (
                           <div
                             key={q.id}
                             style={{
@@ -1597,15 +1960,17 @@ export function App() {
                             </div>
                           </div>
                         ))}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            )}
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Tab 3: PRD 评审 */}
             {activeDetailTab === 'prd' && (
               <div className="prd-review-panel">
+                {/* 顶部操作与元数据栏 */}
                 <div className="card" style={{ marginBottom: 20 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 14 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1613,40 +1978,157 @@ export function App() {
                         <FileText size={20} color="var(--brand-primary)" />
                         PRD 产出文档审阅
                       </span>
+                      {prdDoc && prdDoc.state === 'ready' && (
+                        <span className="badge badge-outline" style={{ borderColor: 'var(--brand-primary)', color: 'var(--brand-primary)' }}>
+                          版本: {prdDoc.version}
+                        </span>
+                      )}
                       {activeWorkPackage.status === 'completed' && (
                         <span className="badge badge-done" style={{ background: 'rgba(34, 197, 94, 0.25)', color: '#4ade80' }}>
-                          <CheckCircle2 size={12} /> PM 已最终确认完成
+                          <CheckCircle2 size={12} /> PM 已最终确认完成 (终态)
                         </span>
                       )}
                     </div>
 
-                    {activeWorkPackage.status !== 'completed' && (
-                      <button className="btn btn-success btn-sm" onClick={() => setShowCompleteModal(true)}>
-                        <CheckCircle2 size={14} />
-                        确认完成 (终态验收)
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        disabled={prdLoading}
+                        onClick={() => loadPrdDocument(activeWorkPackage.requestId)}
+                        title="从本地文件系统重新读取 PRD"
+                      >
+                        <RefreshCw size={13} className={prdLoading ? 'animate-spin' : ''} />
+                        刷新文件
                       </button>
-                    )}
-                  </div>
-                </div>
 
-                <div className="grid-2col" style={{ gridTemplateColumns: '1.4fr 0.8fr' }}>
-                  <div className="card" style={{ padding: 28, background: '#0e131b' }}>
-                    <div className="markdown-body">
-                      <Markdown remarkPlugins={[remarkGfm]}>
-                        {getPrdContent(activeWorkPackage)}
-                      </Markdown>
+                      {activeWorkPackage.status !== 'completed' && prdDoc && prdDoc.state === 'ready' && (
+                        <button className="btn btn-success btn-sm" onClick={() => setShowCompleteModal(true)}>
+                          <CheckCircle2 size={14} />
+                          确认完成 (终态验收)
+                        </button>
+                      )}
                     </div>
                   </div>
 
+                  {/* PRD 元数据条目 */}
+                  {prdDoc && prdDoc.state === 'ready' && (
+                    <div
+                      style={{
+                        marginTop: 14,
+                        paddingTop: 12,
+                        borderTop: '1px solid var(--border-subtle)',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: 20,
+                        fontSize: 12,
+                        color: 'var(--text-muted)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <FolderOpen size={14} color="var(--brand-primary)" />
+                        <span>路径:</span>
+                        <code style={{ color: 'var(--text-main)' }}>{prdDoc.path}</code>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '1px 6px', fontSize: 11 }}
+                          onClick={() => copyToClipboard(prdDoc.path, 'prd_path')}
+                        >
+                          {copiedCmd === 'prd_path' ? <Check size={11} /> : <Copy size={11} />}
+                          {copiedCmd === 'prd_path' ? '已复制' : '复制'}
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Hash size={14} color="var(--brand-primary)" />
+                        <span>SHA-256:</span>
+                        <code
+                          title={`完整 Hash: ${prdDoc.contentHash}`}
+                          style={{ color: '#22d3ee', background: 'var(--bg-surface-raised)', padding: '2px 6px', borderRadius: 'var(--radius-sm)' }}
+                        >
+                          {prdDoc.contentHash.slice(0, 12)}...{prdDoc.contentHash.slice(-8)}
+                        </code>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          style={{ padding: '1px 6px', fontSize: 11 }}
+                          onClick={() => copyToClipboard(prdDoc.contentHash, 'prd_hash')}
+                        >
+                          {copiedCmd === 'prd_hash' ? <Check size={11} /> : <Copy size={11} />}
+                          {copiedCmd === 'prd_hash' ? '已复制' : '复制完整 Hash'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* PRD 内容与修改意见布局 */}
+                <div className="grid-2col" style={{ gridTemplateColumns: '1.4fr 0.8fr' }}>
+                  {/* 左侧：PRD 预览核心区域 */}
+                  <div className="card" style={{ padding: 28, background: '#0e131b', minHeight: 400 }}>
+                    {prdLoading ? (
+                      <div style={{ textAlign: 'center', padding: '60px 0', color: 'var(--text-muted)' }}>
+                        <Loader2 size={36} className="animate-spin" color="var(--brand-primary)" style={{ margin: '0 auto 12px' }} />
+                        <div style={{ fontSize: 14, color: 'var(--text-main)' }}>正在从本地文件系统读取 PRD...</div>
+                        <div style={{ fontSize: 12, marginTop: 4 }}>目标路径: requests/{activeWorkPackage.requestId}/output/02-PRD.md</div>
+                      </div>
+                    ) : prdError ? (
+                      <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+                        <XCircle size={36} color="#f87171" style={{ margin: '0 auto 12px' }} />
+                        <div style={{ fontSize: 15, fontWeight: 600, color: '#fecaca' }}>
+                          PRD 读取失败 ({prdError.code})
+                        </div>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 6, maxWidth: 460, margin: '6px auto 16px' }}>
+                          {prdError.message}
+                        </div>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => loadPrdDocument(activeWorkPackage.requestId)}
+                        >
+                          <RefreshCw size={13} />
+                          重新读取
+                        </button>
+                      </div>
+                    ) : prdDoc && prdDoc.state === 'not_generated' ? (
+                      <div style={{ textAlign: 'center', padding: '60px 20px' }}>
+                        <FileCode2 size={42} color="var(--text-subtle)" style={{ margin: '0 auto 16px', opacity: 0.6 }} />
+                        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-main)' }}>
+                          PRD 尚未生成
+                        </div>
+                        <div style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 8, maxWidth: 440, margin: '8px auto 20px', lineHeight: 1.6 }}>
+                          Claude Code 尚未执行 Phase 4 或生成 <code>02-PRD.md</code>。系统严格遵循事实源规范，不展示任何虚构的临时内容。
+                        </div>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => setActiveDetailTab('overview')}
+                        >
+                          <Play size={13} />
+                          前往会话管理启动 Claude Code
+                        </button>
+                      </div>
+                    ) : prdDoc && prdDoc.state === 'ready' ? (
+                      <div className="markdown-body">
+                        <Markdown remarkPlugins={[remarkGfm]}>
+                          {prdDoc.content}
+                        </Markdown>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {/* 右侧：修改意见与历史修订 */}
                   <div>
                     {activeWorkPackage.status !== 'completed' ? (
                       <div className="card" style={{ marginBottom: 20 }}>
                         <div className="card-header">
                           <span className="card-title" style={{ fontSize: 15 }}>
                             <Edit3 size={16} color="var(--brand-primary)" />
-                            提交修改意见 (写入 revision.md)
+                            {revisionSavedCommentId ? '修改意见已记录 (待唤起 Agent)' : '提交修改意见 (写入 revision.md)'}
                           </span>
                         </div>
+
+                        {revisionSavedCommentId && (
+                          <div style={{ fontSize: 12, color: '#facc15', background: 'rgba(234, 179, 8, 0.1)', border: '1px solid rgba(234, 179, 8, 0.3)', padding: '8px 12px', borderRadius: 'var(--radius-sm)', marginBottom: 12 }}>
+                            ⚠️ 修改意见已成功保存到 <code>revision.md</code>，但上次唤起外部终端失败。点击下方按钮即可直接重试唤起，不会生成重复意见。
+                          </div>
+                        )}
 
                         <div className="form-group">
                           <label className="form-label" style={{ fontSize: 12.5 }}>
@@ -1657,7 +2139,7 @@ export function App() {
                             rows={6}
                             placeholder="例如：补充在车队模式下后车接近时的调光时序图，并明确极端电量下的降级规则..."
                             value={revisionComment}
-                            disabled={isSubmittingRevision}
+                            disabled={isSubmittingRevision || !!revisionSavedCommentId || activeWorkPackage.session.processState === 'running'}
                             onChange={(e) => setRevisionComment(e.target.value)}
                           />
                         </div>
@@ -1665,13 +2147,22 @@ export function App() {
                         <button
                           className="btn btn-primary"
                           style={{ width: '100%' }}
-                          disabled={isSubmittingRevision || !revisionComment.trim()}
+                          disabled={
+                            isSubmittingRevision ||
+                            (!revisionSavedCommentId && !revisionComment.trim()) ||
+                            activeWorkPackage.session.processState === 'running'
+                          }
                           onClick={handleSubmitRevision}
                         >
                           {isSubmittingRevision ? (
                             <>
                               <Loader2 size={15} className="animate-spin" />
-                              正在写入 revision.md...
+                              {revisionSavedCommentId ? '正在唤起终端...' : '正在写入 revision.md 并唤起 Agent...'}
+                            </>
+                          ) : revisionSavedCommentId ? (
+                            <>
+                              <RefreshCw size={15} />
+                              重试唤起 Agent (修改意见已保存)
                             </>
                           ) : (
                             <>
@@ -1680,6 +2171,12 @@ export function App() {
                             </>
                           )}
                         </button>
+
+                        {activeWorkPackage.session.processState === 'running' && (
+                          <div style={{ fontSize: 11.5, color: '#22d3ee', marginTop: 8, textAlign: 'center' }}>
+                            ℹ️ Claude Code 正在运行中，待本次执行完成后可提交修改意见
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="card" style={{ marginBottom: 20, borderColor: 'rgba(34, 197, 94, 0.4)' }}>
@@ -1688,7 +2185,7 @@ export function App() {
                           <span style={{ fontWeight: 600 }}>需求已完成交付</span>
                         </div>
                         <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.6 }}>
-                          PRD 终稿已就绪，不可再直接修改。若需重大重构可新建需求或在工作区归档。
+                          PRD 终稿已锁定，不可再提交修改意见。若需重大重构可登记新需求。
                         </p>
                       </div>
                     )}
@@ -1726,8 +2223,9 @@ export function App() {
                   </div>
                 </div>
 
+                {/* 终态验收弹窗（带版本与 Hash 快照核对） */}
                 {showCompleteModal && (
-                  <div className="modal-backdrop" onClick={() => setShowCompleteModal(false)}>
+                  <div className="modal-backdrop" onClick={() => !isCompleting && setShowCompleteModal(false)}>
                     <div className="modal-container" onClick={(e) => e.stopPropagation()}>
                       <div className="card-header">
                         <span className="card-title">
@@ -1740,21 +2238,59 @@ export function App() {
                         <p>
                           您即将完成需求 <strong>{activeWorkPackage.requestId}</strong> 的评审确认。
                         </p>
+
+                        <div style={{ background: 'var(--bg-base)', padding: 14, borderRadius: 'var(--radius-md)', margin: '14px 0', border: '1px solid var(--border-subtle)', fontSize: 12.5 }}>
+                          <div style={{ marginBottom: 6 }}>
+                            <strong style={{ color: 'var(--text-muted)' }}>锁定文档: </strong>
+                            <code>{(prdDoc && prdDoc.state === 'ready' && prdDoc.path) || activeWorkPackage.prdPath || '02-PRD.md'}</code>
+                          </div>
+                          <div style={{ marginBottom: 6 }}>
+                            <strong style={{ color: 'var(--text-muted)' }}>锁定版本: </strong>
+                            <span style={{ color: 'var(--brand-primary)', fontWeight: 600 }}>
+                              {(prdDoc && prdDoc.state === 'ready' && prdDoc.version) || activeWorkPackage.prdVersion || 'v1.0'}
+                            </span>
+                          </div>
+                          <div>
+                            <strong style={{ color: 'var(--text-muted)' }}>校验摘要 (SHA-256): </strong>
+                            <code style={{ color: '#22d3ee' }}>
+                              {(prdDoc && prdDoc.state === 'ready' && prdDoc.contentHash) || '未就绪'}
+                            </code>
+                          </div>
+                        </div>
+
                         <div className="alert-box alert-warning" style={{ marginTop: 12 }}>
                           <AlertTriangle size={18} />
                           <div>
-                            <strong>门禁提醒：</strong>
-                            PM 确认完成是终态操作，系统将锁定当前 PRD 版本为最终产出。
+                            <strong>快照保护与门禁提醒：</strong>
+                            提交时系统将校验当前 PRD 内容快照与后端文件是否严格一致。若文件在审阅期间被外部修改，将拒绝标记并提示重新审阅。确认完成为终态操作，锁定后不可再直接修订。
                           </div>
                         </div>
                       </div>
 
                       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
-                        <button className="btn btn-secondary" onClick={() => setShowCompleteModal(false)}>
+                        <button
+                          className="btn btn-secondary"
+                          disabled={isCompleting}
+                          onClick={() => setShowCompleteModal(false)}
+                        >
                           取消
                         </button>
-                        <button className="btn btn-success" onClick={handleConfirmCompletion}>
-                          确认完成验收
+                        <button
+                          className="btn btn-success"
+                          disabled={isCompleting}
+                          onClick={handleConfirmCompletion}
+                        >
+                          {isCompleting ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin" />
+                              正在校验快照并确认完成...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 size={14} />
+                              确认完成验收
+                            </>
+                          )}
                         </button>
                       </div>
                     </div>
