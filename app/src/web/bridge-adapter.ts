@@ -9,6 +9,9 @@ import type {
   LaunchResult,
   PreflightResult,
   PreflightCheck,
+  PrdDocument,
+  PrdExpectedSnapshot,
+  AnswerSubmission,
 } from '../bridge/index';
 
 // ============================================================================
@@ -67,11 +70,17 @@ class TauriBridge implements MfpBridge {
   answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('answer_question', { requestId, questionId, answer });
   }
+  submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
+    return invoke<WorkPackage>('submit_answers', { requestId, answers });
+  }
   submitRevision(requestId: string, comment: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('submit_revision', { requestId, comment });
   }
-  complete(requestId: string): Promise<WorkPackage> {
-    return invoke<WorkPackage>('complete', { requestId });
+  readPrd(requestId: string): Promise<PrdDocument> {
+    return invoke<PrdDocument>('read_prd', { requestId });
+  }
+  complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
+    return invoke<WorkPackage>('complete', { requestId, expectedPrd });
   }
   archive(requestId: string): Promise<WorkPackage> {
     return invoke<WorkPackage>('archive', { requestId });
@@ -111,7 +120,8 @@ export class FrontendMockBridge implements MfpBridge {
 
   async register(requestId: string): Promise<WorkPackage> {
     const wp = await this.baseMock.register(requestId);
-    // 注入示例澄清问题
+    // 注入示例澄清问题（Issue #18 契约：有问题即处于「待 PM 回答」阶段，
+    // 否则 mock 演示页的暂存回答会被状态机合法拒绝）
     wp.questions = [
       {
         id: 'q-001',
@@ -122,6 +132,7 @@ export class FrontendMockBridge implements MfpBridge {
         text: '踏频传感器单次骑行低电量广播的抑制周期是多久？建议为 15 分钟或单次骑行最多 2 次。',
       },
     ];
+    wp.status = 'pending_answer';
     return wp;
   }
 
@@ -241,14 +252,16 @@ export class FrontendMockBridge implements MfpBridge {
   }
 
   async answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
-    const wp = await this.baseMock.readWorkPackage(requestId);
-    const q = wp.questions.find((x) => x.id === questionId);
-    if (!q) throw new BridgeError('INVALID_ARGUMENT', `找不到澄清问题：${questionId}`);
-    q.answer = answer;
-    q.answeredAt = new Date().toISOString();
-    wp.status = 'processing';
-    wp.updatedAt = new Date().toISOString();
-    return wp;
+    // Issue #18 契约：只保存，不推进状态（旧「保存即处理中」语义废弃）
+    return this.baseMock.answerQuestion(requestId, questionId, answer);
+  }
+
+  async submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
+    return this.baseMock.submitAnswers(requestId, answers);
+  }
+
+  async readPrd(requestId: string): Promise<PrdDocument> {
+    return this.baseMock.readPrd(requestId);
   }
 
   async submitRevision(requestId: string, comment: string): Promise<WorkPackage> {
@@ -266,7 +279,9 @@ export class FrontendMockBridge implements MfpBridge {
     return wp;
   }
 
-  async complete(requestId: string): Promise<WorkPackage> {
+  async complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
+    // mock 模式：expectedPrd 可选（真实完成门禁在 LocalBridge / 桌面文件模式执行）
+    void expectedPrd;
     const wp = await this.baseMock.readWorkPackage(requestId);
     wp.status = 'completed';
     const run = wp.runLog.find((r) => r.state === 'running');

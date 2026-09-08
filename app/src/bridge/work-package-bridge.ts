@@ -17,6 +17,10 @@ import type {
   PreflightResult,
   RevisionComment,
   SessionMetadata,
+  PrdDocument,
+  PrdExpectedSnapshot,
+  AnswerSubmission,
+  PrdFileAccess,
 } from './types';
 
 // ============================================================================
@@ -42,6 +46,11 @@ export interface WorkPackageBridgeDeps {
    * 缺省（浏览器 mock）不做对账。
    */
   sessionAlive?: (sessionId: string) => Promise<boolean>;
+  /**
+   * 真实 PRD 文件访问（Issue #18）：LocalBridge 注入基于 PathGuard 的实现；
+   * 浏览器 mock 不注入（readPrd/complete 门禁走 mock 自己的实现）。
+   */
+  prdAccess?: PrdFileAccess;
 }
 
 export class WorkPackageBridge implements MfpBridge {
@@ -51,6 +60,7 @@ export class WorkPackageBridge implements MfpBridge {
   protected readonly preflightRaw: (requestId: string) => Promise<PreflightResult>;
   protected readonly sessions: SessionDriver;
   protected readonly sessionAlive: ((sessionId: string) => Promise<boolean>) | undefined;
+  protected readonly prdAccess: PrdFileAccess | undefined;
   protected readonly runGuard = new RunGuard();
   protected seq = 0;
 
@@ -61,6 +71,7 @@ export class WorkPackageBridge implements MfpBridge {
     this.preflightRaw = deps.preflightRaw;
     this.sessions = deps.sessions ?? new MockSessionDriver();
     this.sessionAlive = deps.sessionAlive;
+    this.prdAccess = deps.prdAccess;
   }
 
   async saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
@@ -204,8 +215,24 @@ export class WorkPackageBridge implements MfpBridge {
     this.seq += 1;
     fresh.runLog.push({ runId: `RUN-${this.seq.toString(36)}`, sessionId: outcome.sessionId, startedAt, state: 'running' });
     fresh.updatedAt = this.now();
+    // 产物写回门禁（Issue #18）：Agent 声称 pending_review 时，产物必须已登记
+    // prdPath、版本有效、文件存在且非空；否则退回处理中并记诊断（可 resume 重试），
+    // 不把空文件/缺路径/缺版本当作待审阅，也不改写 Agent 的产物文件。
+    let gateNote = outcome.note;
+    if (fresh.status === 'pending_review' && this.prdAccess) {
+      const problem = this.prdAccess.diagnose(fresh);
+      if (problem) {
+        fresh.status = 'processing';
+        fresh.session.lastError = {
+          code: 'PRD_INVALID',
+          category: 'state',
+          message: `产物写回校验未通过，已退回处理中：${problem}`,
+        };
+        gateNote = '产物写回校验未通过，已退回处理中（详见会话错误信息）；可再次恢复会话让 Agent 重试';
+      }
+    }
     await this.store.save(fresh);
-    return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: outcome.note };
+    return { ok: true, sessionId: outcome.sessionId, startedAt, fallback: outcome.fallback, note: gateNote };
   }
 
   async listWorkPackages(): Promise<WorkPackage[]> {
@@ -226,28 +253,76 @@ export class WorkPackageBridge implements MfpBridge {
     return this.reconcileSessionState(result.workPackage);
   }
 
+  /**
+   * 单题回答兼容入口（Issue #18）：与批量保存同语义——只保存数据，
+   * 不推进状态、不启动 Agent（「保存即处理中」的旧语义已废弃；
+   * 连续执行由前端在保存后调用一次 resume 完成）。
+   */
   async answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
+    return this.submitAnswers(requestId, [{ questionId, answer }]);
+  }
+
+  /**
+   * 批量回答（Issue #18）：整批校验（题目存在 / 无重复 ID / 答案非空 / 状态合法）
+   * 后一次落盘；任一失败不部分保存，不启动 Agent，不迁移状态。
+   * 已有问题允许部分填写后继续（本期不新增必答分类）。
+   */
+  async submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
     const wp = await this.loadRequired(requestId);
-    // 同一轮澄清允许连续回答（Issue #6 验收 F-3 修复）：首个回答把
-    // pending_answer 迁移到 processing；其后同轮回答在 processing 下继续，
-    // 不再被状态机拒绝。其他状态（如 pending_review/completed）仍拒绝。
-    if (wp.status === 'pending_answer') {
-      assertTransition(wp.status, 'processing', 'answerQuestion（PM 回答后继续）');
-      wp.status = 'processing';
-    } else if (wp.status !== 'processing') {
+    // 保存回答是 PM 数据动作，不是执行：状态仅要求处于问答阶段，
+    // 保存本身不得使页面宣称「Agent 正在运行」。
+    if (wp.status !== 'pending_answer' && wp.status !== 'processing') {
       throw new BridgeError(
         'INVALID_TRANSITION',
-        `回答澄清问题需要状态为 pending_answer 或 processing（当前 ${wp.status}）`,
+        `保存回答需要状态为 pending_answer 或 processing（当前 ${wp.status}）`,
         { requestId, status: wp.status },
       );
     }
-    const q = wp.questions.find((x) => x.id === questionId);
-    if (!q) throw new BridgeError('INVALID_ARGUMENT', `找不到澄清问题：${questionId}`);
-    q.answer = answer;
-    q.answeredAt = this.now();
+    if (!Array.isArray(answers) || answers.length === 0) {
+      throw new BridgeError('INVALID_ARGUMENT', 'answers 不能为空（至少一项回答）');
+    }
+    // 整批校验（原子性：任一失败在落盘前抛出，原文件不变）
+    const seen = new Set<string>();
+    for (const item of answers) {
+      if (!item || typeof item !== 'object' || typeof item.questionId !== 'string' || typeof item.answer !== 'string') {
+        throw new BridgeError('INVALID_ARGUMENT', '回答项格式非法（需 { questionId, answer }）');
+      }
+      if (item.answer.trim().length === 0) {
+        throw new BridgeError('INVALID_ARGUMENT', `回答不能为空：${item.questionId}`);
+      }
+      if (seen.has(item.questionId)) {
+        throw new BridgeError('INVALID_ARGUMENT', `重复的 questionId：${item.questionId}（同批不允许重复）`);
+      }
+      seen.add(item.questionId);
+      if (!wp.questions.some((q) => q.id === item.questionId)) {
+        throw new BridgeError('INVALID_ARGUMENT', `找不到澄清问题：${item.questionId}`);
+      }
+    }
+    // 一次落盘
+    const answeredAt = this.now();
+    for (const item of answers) {
+      const q = wp.questions.find((x) => x.id === item.questionId);
+      if (q) {
+        q.answer = item.answer;
+        q.answeredAt = answeredAt;
+      }
+    }
     wp.updatedAt = this.now();
     await this.store.save(wp);
     return wp;
+  }
+
+  /**
+   * 读取当前需求登记的真实 PRD（Issue #18）：无 prdPath → not_generated；
+   * 有路径经注入的真实文件访问读取（同次返回 content/hash/version）。
+   */
+  async readPrd(requestId: string): Promise<PrdDocument> {
+    const wp = await this.loadRequired(requestId);
+    if (!wp.prdPath) return { state: 'not_generated', requestId: wp.requestId };
+    if (!this.prdAccess) {
+      throw new BridgeError('NOT_IMPLEMENTED', '当前桥未接入真实 PRD 文件读取（浏览器 mock 需使用其 readPrd 覆写）', { requestId });
+    }
+    return this.prdAccess.read(wp);
   }
 
   async submitRevision(requestId: string, comment: string): Promise<WorkPackage> {
@@ -265,9 +340,57 @@ export class WorkPackageBridge implements MfpBridge {
     return wp;
   }
 
-  async complete(requestId: string): Promise<WorkPackage> {
+  /**
+   * PM 完成（Issue #18 完成门禁）：
+   *  - 状态须为 pending_review（assertTransition），执行轮进行中禁止完成；
+   *  - 正式桌面文件模式（工作包已登记 prdPath）必须携带 PM 审阅时的快照
+   *    expectedPrd；版本或内容与审阅时不一致 → PRD_CHANGED，要求重新审阅；
+   *  - 校验通过后落盘 confirmedPrd（PM 确认版本/哈希），Agent 不得代填。
+   */
+  async complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
     const wp = await this.loadRequired(requestId);
     assertTransition(wp.status, 'completed', 'complete（PM 完成）');
+    if (this.runGuard.isRunning(requestId)) {
+      throw new BridgeError('CONCURRENT_RUN', `请求 ${requestId} 执行轮进行中，禁止完成（等待本轮结束后重试）`, { requestId });
+    }
+    if (wp.prdPath) {
+      if (
+        !expectedPrd ||
+        typeof expectedPrd.version !== 'number' ||
+        !Number.isInteger(expectedPrd.version) ||
+        typeof expectedPrd.contentHash !== 'string' ||
+        expectedPrd.contentHash.length === 0
+      ) {
+        throw new BridgeError(
+          'INVALID_ARGUMENT',
+          '完成需携带 PM 审阅时的 PRD 快照（expectedPrd: { version, contentHash }，来自 readPrd 返回）',
+          { requestId },
+        );
+      }
+      if (!this.prdAccess) {
+        throw new BridgeError('NOT_IMPLEMENTED', '当前桥未接入真实 PRD 文件校验（浏览器 mock 需使用其 complete 覆写）', { requestId });
+      }
+      const doc = this.prdAccess.read(wp);
+      if (doc.state !== 'ready') {
+        // read 正常不会在此返回 not_generated（prdPath 已登记）；防御性兜底
+        throw new BridgeError('PRD_NOT_FOUND', `PRD 尚未生成或不可读，无法完成（${requestId}）`, { requestId });
+      }
+      if (doc.version !== expectedPrd.version) {
+        throw new BridgeError(
+          'PRD_CHANGED',
+          `PRD 版本已变化：审阅时 v${expectedPrd.version}，当前 v${doc.version}；请重新审阅后再完成`,
+          { requestId, expectedVersion: expectedPrd.version, currentVersion: doc.version },
+        );
+      }
+      if (doc.contentHash !== expectedPrd.contentHash) {
+        throw new BridgeError(
+          'PRD_CHANGED',
+          'PRD 内容已变化（与审阅时不一致）；请重新审阅后再完成',
+          { requestId, expectedContentHash: expectedPrd.contentHash, currentContentHash: doc.contentHash },
+        );
+      }
+      wp.confirmedPrd = { version: doc.version, contentHash: doc.contentHash, confirmedAt: this.now() };
+    }
     wp.status = 'completed';
     const run = wp.runLog.find((r) => r.state === 'running');
     if (run) {

@@ -205,9 +205,37 @@ pub fn submit_revision(state: State<'_, AppState>, request_id: String, comment: 
     )
 }
 
+/// 批量回答（Issue #18）：整批原子保存，不启动 Agent、不推进状态。
 #[tauri::command]
-pub fn complete(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
-    state.call("complete", json!({ "requestId": request_id }))
+pub fn submit_answers(
+    state: State<'_, AppState>,
+    request_id: String,
+    answers: Value,
+) -> Result<Value, String> {
+    state.call(
+        "submitAnswers",
+        json!({ "requestId": request_id, "answers": answers }),
+    )
+}
+
+/// 真实 PRD 读取（Issue #18）：not_generated 或 ready{path,version,content,contentHash}。
+#[tauri::command]
+pub fn read_prd(state: State<'_, AppState>, request_id: String) -> Result<Value, String> {
+    state.call("readPrd", json!({ "requestId": request_id }))
+}
+
+/// PM 完成（Issue #18 完成门禁）：正式流程须携带审阅快照 expectedPrd{version,contentHash}。
+#[tauri::command]
+pub fn complete(
+    state: State<'_, AppState>,
+    request_id: String,
+    expected_prd: Option<Value>,
+) -> Result<Value, String> {
+    let mut params = json!({ "requestId": request_id });
+    if let Some(expected) = expected_prd {
+        params["expectedPrd"] = expected;
+    }
+    state.call("complete", params)
 }
 
 #[tauri::command]

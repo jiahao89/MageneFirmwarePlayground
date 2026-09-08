@@ -28,6 +28,13 @@ export interface FakeCliAdapterOptions {
   /** resume 时视为「会话文件不存在」，触发降级。 */
   resumeShouldFail?: boolean;
   newSessionIds?: () => string;
+  /**
+   * 模拟 Agent 轮的真实文件写回（Issue #18）：每次 startSession（含 resume）
+   * 在记录会话后调用；测试注入确定性「Agent 行为」——读磁盘上的工作包、
+   * 改写 PRD 文件与工作包 JSON，模拟真实 headless 轮的产物落盘。
+   * 抛出则模拟该轮执行失败（resume 失败保留意见与旧 PRD 场景）。
+   */
+  agentTurn?: (spec: StartSessionSpec, sessionId: string) => Promise<void>;
 }
 
 export interface FakeSessionRecord {
@@ -84,6 +91,9 @@ export class FakeCliRuntimeAdapter implements RuntimeAdapter {
 
     const sessionId = spec.mode === 'resume' ? spec.resumeSessionId! : spec.sessionId;
     this.record({ sessionId, mode: spec.mode, cwd: spec.cwd, plan: fakePlan(spec.cwd) });
+    if (this.opts.agentTurn) {
+      await this.opts.agentTurn(spec, sessionId);
+    }
     return { sessionId, fallback: false };
   }
 

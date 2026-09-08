@@ -8,6 +8,15 @@ export * from './index';
 export { PathGuard } from './path-guard';
 export { RunGuard } from './concurrency';
 export { runProcess } from './process-runner';
+export {
+  PRD_ALLOWED_PREFIX,
+  normalizePrdRelPath,
+  resolvePrdPath,
+  sha256Hex,
+  readPrdDocument,
+  diagnosePrdArtifact,
+  assertPrdMatchesReview,
+} from './prd-reader';
 export type { RunProcessOptions, ProcessResult } from './process-runner';
 export { readWorkPackageFile, writeWorkPackageFile, parseWorkPackage, validateWorkPackage } from './work-package';
 export type { WorkPackageFileResult } from './work-package';

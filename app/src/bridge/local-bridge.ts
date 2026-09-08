@@ -6,6 +6,7 @@ import { AdapterSessionDriver } from './session-driver';
 import { PathGuard } from './path-guard';
 import { runProcess } from './process-runner';
 import { ClaudeCliAdapter } from './claude-cli-adapter';
+import { readPrdDocument, diagnosePrdArtifact } from './prd-reader';
 import type { RuntimeAdapter } from './runtime-adapter';
 import type { RawInput, PreflightResult, PreflightCheck } from './types';
 
@@ -51,6 +52,11 @@ export class LocalBridge extends WorkPackageBridge {
       preflightRaw: (requestId: string) => runPreflight(guard, adapter, requestId),
       sessions: new AdapterSessionDriver(adapter, { root: guard.root, newSessionId: opts.newSessionId }),
       sessionAlive: opts.sessionAlive ?? defaultSessionAlive(),
+      // 真实 PRD 文件访问（Issue #18）：基于 PathGuard 的读取与产物诊断
+      prdAccess: {
+        read: (wp) => readPrdDocument(wp, guard),
+        diagnose: (wp) => diagnosePrdArtifact(wp, guard),
+      },
     });
     this.guard = guard;
     this.adapter = adapter;
