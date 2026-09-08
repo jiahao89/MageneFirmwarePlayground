@@ -198,12 +198,12 @@ describe('会话生命周期（Issue #3）', () => {
     saved.status = 'pending_answer';
     fs.writeFileSync(file, JSON.stringify(saved));
 
-    // 首个回答：pending_answer → processing
+    // 首个回答：只保存数据，不推进状态（Issue #18 契约；旧「保存即 processing」已废弃）
     const a1 = await bridge.answerQuestion(wp.requestId, 'Q1', '答案一');
-    expect(a1.status).toBe('processing');
-    // 同轮后续回答：processing 下继续，不再 INVALID_TRANSITION（回归点）
+    expect(a1.status).toBe('pending_answer');
+    // 同轮后续回答：连续保存不再被状态机拒绝（回归点）
     const a2 = await bridge.answerQuestion(wp.requestId, 'Q2', '答案二');
-    expect(a2.status).toBe('processing');
+    expect(a2.status).toBe('pending_answer');
     expect(a2.questions.find((q) => q.id === 'Q2')?.answer).toBe('答案二');
     const a3 = await bridge.answerQuestion(wp.requestId, 'Q3', '答案三');
     expect(a3.questions.filter((q) => q.answer).length).toBe(3);

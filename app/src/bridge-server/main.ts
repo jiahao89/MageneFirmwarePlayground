@@ -78,8 +78,14 @@ const METHODS: Record<string, Handler> = {
   launch: (b, p) => b.launch(String(p.requestId)),
   resume: (b, p) => b.resume(String(p.requestId)),
   answerQuestion: (b, p) => b.answerQuestion(String(p.requestId), String(p.questionId), String(p.answer)),
+  submitAnswers: (b, p) => b.submitAnswers(String(p.requestId), Array.isArray(p.answers) ? (p.answers as { questionId: string; answer: string }[]) : []),
   submitRevision: (b, p) => b.submitRevision(String(p.requestId), String(p.comment)),
-  complete: (b, p) => b.complete(String(p.requestId)),
+  readPrd: (b, p) => b.readPrd(String(p.requestId)),
+  complete: (b, p) =>
+    b.complete(
+      String(p.requestId),
+      p.expectedPrd && typeof p.expectedPrd === 'object' ? (p.expectedPrd as { version: number; contentHash: string }) : undefined,
+    ),
   archive: (b, p) => b.archive(String(p.requestId)),
 };
 

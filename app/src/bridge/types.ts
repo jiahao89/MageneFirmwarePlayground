@@ -116,6 +116,17 @@ export interface SessionMetadata {
 }
 
 /**
+ * PM 审阅完成时确认的 PRD 快照（Issue #18 完成门禁）。
+ * `complete` 校验当前产物与 PM 预览时的版本/哈希一致后才落盘此字段；
+ * Agent 不得代填。
+ */
+export interface ConfirmedPrd {
+  version: number;
+  contentHash: string;
+  confirmedAt: string;
+}
+
+/**
  * 工作包（file-based source of truth）：单个文件承载完整生命周期，
  * 从「待识别」到「完成/归档」。持久化落盘由 FileWorkPackageStore 负责。
  */
@@ -130,6 +141,8 @@ export interface WorkPackage {
   revisionComments: RevisionComment[];
   prdPath?: string;
   prdVersion?: number;
+  /** PM 完成确认时的 PRD 快照（Issue #18；仅 complete 写入）。 */
+  confirmedPrd?: ConfirmedPrd;
   runLog: RunRecord[];
   session: SessionMetadata;
   artifacts: string[];
@@ -167,6 +180,55 @@ export interface LaunchResult {
   error?: BridgeErrorPayload;
 }
 
+// ----------------------------------------------------------------------------
+// PRD 文档读取与完成门禁（Issue #18：真实 PRD 读取、批量回答与修订执行一致性）
+// ----------------------------------------------------------------------------
+
+/**
+ * 当前需求的真实 PRD 文档（同一次读取返回内容与哈希，保证一致）。
+ *  - `not_generated`：工作包尚无 prdPath（未产出 PRD），不是错误；
+ *  - `ready`：磁盘 Markdown 原文 + 本次读取内容的 SHA-256 + 工作包版本。
+ * 文件丢失/不可读/空文档/版本无效/读取竞争分别抛
+ * PRD_NOT_FOUND / PRD_READ_FAILED / PRD_INVALID / PRD_CHANGED（见 errors.ts）。
+ */
+export type PrdDocument =
+  | { state: 'not_generated'; requestId: string }
+  | {
+      state: 'ready';
+      requestId: string;
+      /** 项目内相对路径（工作包登记的 prdPath）。 */
+      path: string;
+      /** WorkPackage.prdVersion（同次读取返回）。 */
+      version: number;
+      /** 磁盘 Markdown 原文。 */
+      content: string;
+      /** 本次读取内容的 SHA-256。 */
+      contentHash: string;
+    };
+
+/** PM 完成时携带的审阅快照（来自 readPrd 返回的 version + contentHash）。 */
+export interface PrdExpectedSnapshot {
+  version: number;
+  contentHash: string;
+}
+
+/** 批量回答项（Issue #18 submitAnswers；整批原子保存）。 */
+export interface AnswerSubmission {
+  questionId: string;
+  answer: string;
+}
+
+/**
+ * 真实 PRD 文件访问（Issue #18；node 侧由 LocalBridge 注入，浏览器 mock 不注入）。
+ * 纯接口定义（浏览器安全）：实现见 prd-reader.ts（仅 node）。
+ */
+export interface PrdFileAccess {
+  /** 读取工作包登记的真实 PRD；路径/一致性/版本错误按 PrdDocument 契约抛 BridgeError。 */
+  read(wp: Pick<WorkPackage, 'requestId' | 'prdPath' | 'prdVersion'>): PrdDocument;
+  /** 产物有效性诊断（pending_review 门禁用）；有效返回 undefined。 */
+  diagnose(wp: Pick<WorkPackage, 'requestId' | 'prdPath' | 'prdVersion'>): string | undefined;
+}
+
 /**
  * 本地桥接接口：Web UI 调用的全部公共操作。
  * Issue #2 交付工作包文件持久化 + 状态机 + 读写服务；
@@ -186,7 +248,25 @@ export interface MfpBridge {
   launch(requestId: string): Promise<LaunchResult>;
   resume(requestId: string): Promise<LaunchResult>;
   answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage>;
+  /**
+   * 批量回答（Issue #18）：整批校验（题目存在 / 无重复 ID / 答案非空 / 状态合法）
+   * 后一次落盘；任一失败不部分保存，且保存本身不启动 Agent、不推进状态。
+   * 连续执行由前端先 submitAnswers 再调用一次 resume 完成。
+   */
+  submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage>;
   submitRevision(requestId: string, comment: string): Promise<WorkPackage>;
-  complete(requestId: string): Promise<WorkPackage>;
+  /**
+   * 读取当前需求登记的真实 PRD（Issue #18）：无 prdPath → not_generated；
+   * 有路径则返回同次读取的 content/contentHash/version。路径越界 / 文件丢失 /
+   * 不可读 / 空文档 / 版本无效 / 读取竞争分别抛 INVALID_PATH / PRD_NOT_FOUND /
+   * PRD_READ_FAILED / PRD_INVALID / PRD_CHANGED。
+   */
+  readPrd(requestId: string): Promise<PrdDocument>;
+  /**
+   * PM 完成（Issue #18 完成门禁）：正式桌面文件模式下（工作包已登记 prdPath）
+   * 必须携带审阅时的 expectedPrd；版本或内容变化抛 PRD_CHANGED 要求重新审阅。
+   * 可选参数仅用于非 PRD 流程 / 显式 mock 的源码兼容，不允许真实流程省略绕过。
+   */
+  complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage>;
   archive(requestId: string): Promise<WorkPackage>;
 }

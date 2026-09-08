@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { LocalBridge, readWorkPackageFile, writeWorkPackageFile, FakeCliRuntimeAdapter } from '../src/bridge/node';
+import { LocalBridge, readWorkPackageFile, writeWorkPackageFile, FakeCliRuntimeAdapter, sha256Hex } from '../src/bridge/node';
 import { BridgeError } from '../src/bridge/index';
 import type { WorkPackage } from '../src/bridge/index';
 
@@ -89,13 +89,16 @@ describe('文件桥接契约（Issue #2）', () => {
     expect(read.status).toBe('pending_answer');
     expect(read.questions).toHaveLength(1);
 
-    // PM 回答 → 处理中
+    // PM 回答 → 只保存数据，不推进状态、不启动 Agent（Issue #18 契约）
     await bridge.answerQuestion(wp0.requestId, 'Q1', '骑行爱好者');
     read = await bridge.readWorkPackage(wp0.requestId);
-    expect(read.status).toBe('processing');
+    expect(read.status).toBe('pending_answer');
     expect(read.questions[0].answer).toBe('骑行爱好者');
 
-    // Agent 写 PRD → 待审阅
+    // Agent 写 PRD 文件 + 登记产物 → 待审阅
+    fs.mkdirSync(path.join(root, 'output', '爬坡规划'), { recursive: true });
+    const prdContent = `# PRD：爬坡规划\n\n随机唯一验收文本 CLIMB-${Date.now().toString(36)}`;
+    fs.writeFileSync(path.join(root, 'output', '爬坡规划', '02-PRD.md'), prdContent, 'utf8');
     agentWrite(root, wp0.requestId, (wp) => {
       wp.prdPath = 'output/爬坡规划/02-PRD.md';
       wp.prdVersion = 1;
@@ -105,9 +108,26 @@ describe('文件桥接契约（Issue #2）', () => {
     expect(read.status).toBe('pending_review');
     expect(read.prdVersion).toBe(1);
 
-    // PM 完成
-    const done = await bridge.complete(wp0.requestId);
+    // PM 审阅：readPrd 获取同次读取的内容与快照（Issue #18）
+    const doc = await bridge.readPrd(wp0.requestId);
+    expect(doc.state).toBe('ready');
+    if (doc.state === 'ready') {
+      expect(doc.content).toBe(prdContent);
+      expect(doc.version).toBe(1);
+      expect(doc.contentHash).toBe(sha256Hex(prdContent));
+    }
+
+    // PM 完成：必须携带审阅快照（Issue #18 完成门禁）
+    await expect(bridge.complete(wp0.requestId)).rejects.toMatchObject({
+      payload: expect.objectContaining({ code: 'INVALID_ARGUMENT' }),
+    });
+    const done = await bridge.complete(wp0.requestId, {
+      version: doc.state === 'ready' ? doc.version : 1,
+      contentHash: doc.state === 'ready' ? doc.contentHash : '',
+    });
     expect(done.status).toBe('completed');
+    expect(done.confirmedPrd?.version).toBe(1);
+    expect(done.confirmedPrd?.contentHash).toBe(sha256Hex(prdContent));
   });
 
   it('重启后未完成的 running 状态不能被再次 launch（持久化运行态）', async () => {

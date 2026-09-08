@@ -25,10 +25,26 @@ Issue #1 定义的「最高测试缝隙」—— Web UI 与本地桥接层之间
 | `preflight` | `(requestId) => PreflightResult` | — | #3 |
 | `launch` | `(requestId) => LaunchResult` | `pending_launch` → `processing`（并发保护） | #3 |
 | `resume` | `(requestId) => LaunchResult` | 复用 launch / 返回现有会话 | #3 |
-| `answerQuestion` | `(requestId, questionId, answer) => WorkPackage` | `pending_answer` → `processing` | #2 |
+| `answerQuestion` | `(requestId, questionId, answer) => WorkPackage` | —（只保存数据，不推进状态） | #2（#18 语义修订） |
+| `submitAnswers` | `(requestId, answers[]) => WorkPackage` | —（整批原子保存；任一失败不落盘、不启动 Agent） | #18 |
+| `readPrd` | `(requestId) => PrdDocument` | —（not_generated / ready{path,version,content,contentHash}） | #18 |
 | `submitRevision` | `(requestId, comment) => WorkPackage` | `pending_review` → `revising` | #2 |
-| `complete` | `(requestId) => WorkPackage` | `pending_review` → `completed`（PM 权威） | #2 |
+| `complete` | `(requestId, expectedPrd?) => WorkPackage` | `pending_review` → `completed`（PM 权威；登记 prdPath 时必须携带审阅快照，版本/内容不一致 → `PRD_CHANGED`） | #2（#18 完成门禁） |
 | `archive` | `(requestId) => WorkPackage` | `pending_confirmation`/`pending_launch`/`pending_review` → `archived`（PM 权威） | #2 |
+
+### PRD 读取与完成门禁（Issue #18）
+
+- `readPrd`：无 `prdPath` → `{ state:'not_generated' }`；有路径经 `PathGuard` 校验
+  （项目内相对路径、`output/` 前缀、`.md` 后缀、无 `..`/符号链接逃逸），返回同次读取的
+  `content`/`contentHash`(SHA-256)/`version`。错误：`PRD_NOT_FOUND`（文件丢失）/
+  `PRD_READ_FAILED`（不可读）/`PRD_INVALID`（空文档、版本无效）/`PRD_CHANGED`
+  （Agent 正在写入、读取不稳定）。
+- `submitAnswers`：批量原子保存（题目存在/无重复 ID/答案非空先整批校验）；
+  保存不推进状态、不启动 Agent——连续执行 = 先 `submitAnswers` 再一次 `resume`。
+- `complete`：执行轮进行中禁止完成；正式桌面文件模式（已登记 prdPath）必须携带
+  `expectedPrd`（来自 `readPrd`）；通过后落盘 `WorkPackage.confirmedPrd`（PM 确认快照）。
+- Agent 声称 `pending_review` 时经产物门禁校验（prdPath 已登记、版本有效、文件非空），
+  不通过退回 `processing` 并记 `session.lastError`（`PRD_INVALID`），不改写产物文件。
 
 ## 需求状态机（`state-machine.ts`）
 

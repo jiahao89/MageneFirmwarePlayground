@@ -26,7 +26,9 @@ pub fn run() {
             commands::launch,
             commands::resume,
             commands::answer_question,
+            commands::submit_answers,
             commands::submit_revision,
+            commands::read_prd,
             commands::complete,
             commands::archive,
         ])
