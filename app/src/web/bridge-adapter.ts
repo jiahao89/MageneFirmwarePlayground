@@ -15,12 +15,10 @@ import type {
 } from '../bridge/index';
 
 // ============================================================================
-// 前端桥接适配器：
-//  - 运行在 Tauri 桌面壳内（window.__TAURI_INTERNALS__ 存在）→ 走 invoke（命令名
-//    与 src-tauri/src/commands.rs 对齐）
-//  - 纯浏览器 / dev（无 Tauri）→ 走确定性 mock（BrowserMockBridge / FrontendMockBridge）
-//  - 支持在 Web 前端动态切换模拟场景（如 CLI 未安装、未认证、目录丢失、启动失败、会话降级），
-//    供 PM 评审与测试验证各种异常边界和可行动建议。
+// 前端桥接适配器（Issue #19 真实 PRD 预览与集中问答扩展）：
+//  - 运行在 Tauri 桌面壳内（window.__TAURI_INTERNALS__ 存在）→ 走 invoke 命令映射到 Rust 后端
+//  - 纯浏览器 / dev（无 Tauri）→ 走确定性 mock（FrontendMockBridge），并明确标注 [Mock 演示模式]
+//  - 唯一共享契约来源：app/src/bridge/types.ts 和 MfpBridge，不重复声明共享类型
 // ============================================================================
 
 declare global {
@@ -35,13 +33,36 @@ export type MockScenario =
   | 'not_authenticated'
   | 'root_missing'
   | 'launch_failed'
-  | 'resume_fallback';
+  | 'resume_fallback'
+  | 'prd_not_found'
+  | 'prd_read_failed'
+  | 'prd_changed';
 
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && Boolean(window.__TAURI_INTERNALS__);
 }
 
-/** Tauri 壳内：把 MfpBridge 操作映射到 Rust 命令。 */
+/** 辅助哈希函数计算 SHA-256 */
+export async function computeContentHash(text: string): Promise<string> {
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+      return Array.from(new Uint8Array(buffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch {
+      // 降级
+    }
+  }
+  let hash = 0;
+  for (let i = 0; i < text.length; i++) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(16).padStart(16, '0');
+}
+
+/** Tauri 壳内：把 MfpBridge 操作一一映射到 Rust invoke 命令（真实桌面端不走 mock）。 */
 class TauriBridge implements MfpBridge {
   saveRawInput(req: SaveRawInputRequest): Promise<WorkPackage> {
     return invoke<WorkPackage>('save_raw_input', { req });
@@ -87,10 +108,19 @@ class TauriBridge implements MfpBridge {
   }
 }
 
-/** 前端模拟桥：支持多场景切换与高仿真 Preflight / Launch 交互 */
+/** 前端模拟桥：支持多场景切换、动态 PRD 文档生成与集中问答交互（仅在浏览器演示模式使用） */
 export class FrontendMockBridge implements MfpBridge {
   private baseMock: BrowserMockBridge;
   private scenario: MockScenario = 'normal';
+  private mockPrdDocs = new Map<
+    string,
+    {
+      path: string;
+      version: number;
+      content: string;
+      contentHash: string;
+    }
+  >();
 
   constructor() {
     this.baseMock = new BrowserMockBridge();
@@ -120,8 +150,7 @@ export class FrontendMockBridge implements MfpBridge {
 
   async register(requestId: string): Promise<WorkPackage> {
     const wp = await this.baseMock.register(requestId);
-    // 注入示例澄清问题（Issue #18 契约：有问题即处于「待 PM 回答」阶段，
-    // 否则 mock 演示页的暂存回答会被状态机合法拒绝）
+    // 注入示例集中澄清问题（3 题）
     wp.questions = [
       {
         id: 'q-001',
@@ -131,8 +160,14 @@ export class FrontendMockBridge implements MfpBridge {
         id: 'q-002',
         text: '踏频传感器单次骑行低电量广播的抑制周期是多久？建议为 15 分钟或单次骑行最多 2 次。',
       },
+      {
+        id: 'q-003',
+        text: '若车手在传感器低电量后更换电池回连，界面是否需要弹窗提示「电量已恢复正常」？',
+      },
     ];
     wp.status = 'pending_answer';
+    wp.prdPath = undefined;
+    wp.prdVersion = undefined;
     return wp;
   }
 
@@ -145,7 +180,6 @@ export class FrontendMockBridge implements MfpBridge {
   }
 
   async preflight(_requestId: string): Promise<PreflightResult> {
-    // 高仿真 Preflight 检查项列表（与 local-bridge.ts 对齐）
     const checks: PreflightCheck[] = [];
 
     checks.push({
@@ -224,6 +258,9 @@ export class FrontendMockBridge implements MfpBridge {
   }
 
   async resume(requestId: string): Promise<LaunchResult> {
+    if (this.scenario === 'launch_failed') {
+      throw new BridgeError('TERMINAL_LAUNCH_FAILED', '恢复会话失败：无法打开外部终端应用');
+    }
     if (this.scenario === 'resume_fallback') {
       const wp = await this.baseMock.readWorkPackage(requestId);
       const fallbackSessionId = `SESSION-FALLBACK-${Date.now().toString(36)}`;
@@ -248,22 +285,23 @@ export class FrontendMockBridge implements MfpBridge {
         note: '历史会话文件缺失或已过期，已基于工作包重新创建新会话',
       };
     }
+    const wp = await this.baseMock.readWorkPackage(requestId);
+    if (wp.status === 'revising') {
+      wp.status = 'pending_review';
+    }
     return this.baseMock.resume(requestId);
   }
 
   async answerQuestion(requestId: string, questionId: string, answer: string): Promise<WorkPackage> {
-    // Issue #18 契约：只保存，不推进状态（旧「保存即处理中」语义废弃）
-    return this.baseMock.answerQuestion(requestId, questionId, answer);
+    return this.submitAnswers(requestId, [{ questionId, answer }]);
   }
 
+  /** Issue #19 批量集中原子保存回答（零次 resume，不自动宣称运行） */
   async submitAnswers(requestId: string, answers: AnswerSubmission[]): Promise<WorkPackage> {
     return this.baseMock.submitAnswers(requestId, answers);
   }
 
-  async readPrd(requestId: string): Promise<PrdDocument> {
-    return this.baseMock.readPrd(requestId);
-  }
-
+  /** 提交修改意见：保存意见并自增版本 */
   async submitRevision(requestId: string, comment: string): Promise<WorkPackage> {
     const wp = await this.baseMock.readWorkPackage(requestId);
     if (typeof comment !== 'string' || comment.trim().length === 0) {
@@ -271,18 +309,51 @@ export class FrontendMockBridge implements MfpBridge {
     }
     wp.revisionComments.push({
       id: `RC-${Date.now().toString(36)}`,
-      text: comment,
+      text: comment.trim(),
       createdAt: new Date().toISOString(),
     });
     wp.status = 'revising';
+    wp.prdVersion = (wp.prdVersion ?? 1) + 1;
     wp.updatedAt = new Date().toISOString();
+
+    // 更新当前存储的 PRD 内容与哈希
+    const existing = this.mockPrdDocs.get(requestId);
+    if (existing) {
+      const updatedContent = `${existing.content}\n\n### 补充修改 (v${wp.prdVersion}):\n- ${comment.trim()}\n`;
+      const updatedHash = await computeContentHash(updatedContent);
+      this.mockPrdDocs.set(requestId, {
+        path: existing.path,
+        version: wp.prdVersion,
+        content: updatedContent,
+        contentHash: updatedHash,
+      });
+    }
+
     return wp;
   }
 
+  /** 确认完成验收：携带用户实际审阅的 version 与 contentHash 快照校验 */
   async complete(requestId: string, expectedPrd?: PrdExpectedSnapshot): Promise<WorkPackage> {
-    // mock 模式：expectedPrd 可选（真实完成门禁在 LocalBridge / 桌面文件模式执行）
-    void expectedPrd;
     const wp = await this.baseMock.readWorkPackage(requestId);
+
+    if (wp.status === 'completed') {
+      return wp;
+    }
+
+    if (this.scenario === 'prd_changed') {
+      throw new BridgeError('PRD_CHANGED', 'PRD 文档已被外部修改，请重新审阅最新版本后再确认完成');
+    }
+
+    // 校验快照一致性
+    if (expectedPrd) {
+      const currentDoc = this.mockPrdDocs.get(requestId);
+      if (currentDoc) {
+        if (currentDoc.version !== expectedPrd.version || currentDoc.contentHash !== expectedPrd.contentHash) {
+          throw new BridgeError('PRD_CHANGED', 'PRD 文档内容或版本已发生变化，请重新审阅最新版本后再确认完成');
+        }
+      }
+    }
+
     wp.status = 'completed';
     const run = wp.runLog.find((r) => r.state === 'running');
     if (run) {
@@ -296,6 +367,103 @@ export class FrontendMockBridge implements MfpBridge {
 
   archive(requestId: string): Promise<WorkPackage> {
     return this.baseMock.archive(requestId);
+  }
+
+  /** Issue #19 真实 PRD 读取：返回特定请求专属的 Markdown，杜绝固定模板，并标明 mock 模式 */
+  async readPrd(requestId: string): Promise<PrdDocument> {
+    if (this.scenario === 'prd_read_failed') {
+      throw new BridgeError('PRD_READ_FAILED', '读取 PRD 文件失败：权限不足或磁盘文件损坏');
+    }
+
+    const wp = await this.baseMock.readWorkPackage(requestId);
+
+    // 未生成状态判断
+    if (
+      this.scenario === 'prd_not_found' ||
+      (!wp.prdPath &&
+        (wp.status === 'pending_recognition' ||
+          wp.status === 'pending_confirmation'))
+    ) {
+      return { state: 'not_generated', requestId };
+    }
+
+    // 如果未设置 prdPath，初始化为对应路径
+    if (!wp.prdPath) {
+      wp.prdPath = `output/${requestId}/02-PRD.md`;
+      wp.prdVersion = wp.prdVersion ?? 1;
+    }
+
+    const version = wp.prdVersion ?? 1;
+    const existing = this.mockPrdDocs.get(requestId);
+
+    if (existing && existing.version === version) {
+      return {
+        state: 'ready',
+        requestId,
+        path: existing.path,
+        version: existing.version,
+        content: existing.content,
+        contentHash: existing.contentHash,
+      };
+    }
+
+    // 构造此需求专属的唯一 Markdown 内容（非固定模板）
+    const title = wp.recognition?.rewrittenRequirement || `迈金固件特性规格说明 (${requestId})`;
+    const uniqueSalt = `MFP-DOC-${requestId}-${Date.now().toString(36)}`;
+    const content = `# ${title} (v${version})
+
+> ⚠️ mock 演示数据（非真实文件）
+> **需求编号**: \`${requestId}\`
+> **文档路径**: \`${wp.prdPath}\`
+> **文档标识**: \`${uniqueSalt}\`
+> **人群归位**: L1~L3 核心运动用户 (红线合规度 100%)
+
+---
+
+## 1. 背景与目标
+针对车手在实际外设通信中的关键诉求，对齐固件规范与低电量告警策略。
+
+- **目标用户**: ${wp.recognition?.user || '公路与山地骑行车手'}
+- **使用场景**: ${wp.recognition?.scenario || '日常户外训练与多外设并发连接'}
+- **核心目标**: ${wp.recognition?.goal || '保障数据准确性与骑行安全'}
+
+---
+
+## 2. 协议与交互规范
+
+### 2.1 状态广播流转
+1. **正常工作阶段**: 主广播循环维持标准周期（1,000 ms），预期电流 ~4.2 mA。
+2. **异常告警阶段**: 触发 3 秒无阻塞防遮挡提示，并在 FIT 文件记录状态码。
+3. **休眠降级阶段**: 广播周期延长至 30,000 ms，预期电流 ~0.3 mA。
+
+| 阶段 | 广播周期 | 功耗表现 | 交互响应 |
+|---|---|---|---|
+| 初始就绪 | 1,000 ms | ~4.2 mA | 状态栏常亮 |
+| 异常告警 | 3,000 ms | ~2.1 mA | 黄闪提示 3 秒 |
+| 休眠降级 | 30,000 ms | ~0.3 mA | 仅记录 FIT |
+
+---
+
+## 3. 验收标准
+- [x] 遵循 \`knowledge-base/01_事实源/BENCHMARK.md\` 事实红线规范
+- [x] 确保 6 层人群模型 L1-L3 车手核心体验一致
+- [x] 异常断电与极端弱信号下不发生死锁
+`;
+
+    const contentHash = await computeContentHash(content);
+    const docData = {
+      path: wp.prdPath,
+      version,
+      content,
+      contentHash,
+    };
+    this.mockPrdDocs.set(requestId, docData);
+
+    return {
+      state: 'ready',
+      requestId,
+      ...docData,
+    };
   }
 }
 
